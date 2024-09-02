@@ -27,7 +27,7 @@ custom_theme <- theme_minimal() +
                       panel.grid.minor = element_blank())
 ```
 
-```{r data, include=FALSE}
+```{r, include=FALSE}
 # sum of species
 shp <- st_read("../Data/richness_effort_v13_total_1km_urb_f1km_30min_10spp.shp")
 cdata <- shp
@@ -75,6 +75,50 @@ cdata <- cdata %>%
     np_m = (np_f + np_h) / 2
   )
 
+
+cdata <- cdata %>% arrange(id) 
+
 ```
 
+```{r, include=FALSE}
+# sum of species
+sp <- st_read("../Data/ebd_total_1km_urb_f1km_30min_10spp.shp")
 
+# 2. Criar uma tabela de espécies únicas e IDs de grade
+unique_species <- unique(sp$scntfc_)
+unique_ids <- unique(sp$id)
+
+# 3. Ordenar IDs e espécies
+unique_species <- sort(unique_species)
+unique_ids <- sort(unique_ids)
+
+# 4. Inicializar a matriz de presença-ausência com zeros
+presence_absence <- matrix(0, nrow = length(unique_ids), ncol = length(unique_species))
+colnames(presence_absence) <- unique_species
+rownames(presence_absence) <- unique_ids
+
+# 5. Preencher a matriz de presença-ausência
+for (i in 1:nrow(sp)) {
+  grid_id <- sp$id[i]
+  species <- sp$scntfc_[i]
+  presence_absence[as.character(grid_id), as.character(species)] <- presence_absence[as.character(grid_id), as.character(species)] + 1
+}
+
+# 6. Converter a matriz para um data frame para melhor legibilidade
+pa <- as.data.frame(presence_absence)
+```
+
+```{r, echo=FALSE}
+# Define the training datasets
+X <- as.data.frame(cdata) %>% select(prop_veg, SGVI, SVI, SUVI, SEVIn, contig_m, shdi, area_mn_m, nlsi_m)
+#X_train <- train_data %>% select(SVI, SGVI, SUVI)
+Y <- as.data.frame(pa)
+
+mvpart_model <- mvpart(as.matrix(Y) ~ ., data = X,
+                    xv = "1se", # select smallest tree within 1 se
+                    xval = nrow(Y), # number of cross-validations
+                    xvmult = 10, # number of multiple cross-validations
+                    size = 6,
+                    which = 1,
+                    legend = FALSE, margin = 0.01, cp = 0, prn = F)
+```
