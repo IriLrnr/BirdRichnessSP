@@ -1,0 +1,486 @@
+---
+title: "Assessing the Impact of Urban Infrastructure on Bird Biodiversity"
+author: "Bianca Neves & Irina Lerner"
+date: "30/08/24"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    theme: paper
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(ggplot2)
+library(dplyr)
+library(PerformanceAnalytics) # for correlation matrix
+library(tidyr) # for organized code
+library(sf, sp) # for reading shp and ploting
+library(spdep)
+library(ggeffects)
+library(spaMM)
+library(mgcv)
+library(randomForest)
+library(pdp)
+library(glmnet)
+library(vegan)
+# customs
+custom_theme <- theme_minimal() +
+                theme(text = element_text(size = 12),
+                      plot.title = element_blank(),
+                      panel.grid.major = element_blank(),
+                      panel.grid.minor = element_blank())
+
+# fitme models
+spatial_models <- function(data_df, response, predictors, family=gaussian) {
+  # Create a list of formulas based on predictors adding random effects
+  formulas <- lapply(predictors, function(x) {
+    as.formula(paste(response, "~", x, "+ Matern(1 | centx + centy)"))
+  })
+  
+  # Fit the models using fitme
+  
+  avail_thr <- parallel::detectCores(logical=FALSE) - 1L 
+  
+  models <- lapply(formulas, function(f) {
+    fitme(formula = f, data = data_df, family = family,
+          fixed=list(longdep=0.5,shape=0.5,rho=0.05),
+          control.HLfit=list(NbThreads=max(avail_thr, 1L), 
+                             algebra="spcorr"))
+  })
+  
+  # Name the models for easy reference
+  names(models) <- predictors
+  
+  # Return the list of models
+  return(models)
+}
+
+get_AIC <- function(model) {
+  as.numeric((AIC.HLfit(model))[1])
+}
+
+AIC_eff_tab <- function(models, name) {
+  # Initialize AICs and effect sizes
+  AICs <- sapply(models, get_AIC, simplify = FALSE)
+  
+  AIC_df <- data.frame(Class = name, Model = names(AICs), AIC = round(unlist(AICs), 4), row.names = NULL)
+  AIC_df$deltaAIC <- round(AIC_df$AIC - min(AIC_df$AIC), 4)
+  
+  AIC_df$pred1 <- ""
+  AIC_df$pred2 <- ""
+  AIC_df$inter <- ""
+  
+  for (i in 1:length(models)) {
+    fe <- fixef(models[[i]])
+    se <- sqrt(diag(vcov(models[[i]])))
+    tvals <- fe / se
+    
+    for (j in 2:min(length(fe), 4)) { # Ensure we don't exceed the number of available predictors
+      sig <- "" # Initialize sig as an empty string
+      
+      # Check if tvals[j] is not NA before proceeding with the comparison
+      if (!is.na(tvals[j])) {
+        if (abs(tvals[j]) < 1.96) sig <- ""
+        if (abs(tvals[j]) >= 1.96) sig <- "*"      # p < 0.05
+        if (abs(tvals[j]) > 2.576) sig <- "**" # p < 0.01
+        if (abs(tvals[j]) > 3.291) sig <- "*"# p < 0.001
+      }
+      
+      # Round the effect size before converting to string and appending significance markers
+      rounded_effect_size <- round(as.numeric(fe[j]), 4)
+      val_with_sig <- if (!is.na(fe[j])) paste0(rounded_effect_size, sig) else ""
+      
+      if (j == 2) {
+        AIC_df$pred1[i] <- val_with_sig
+      } else if (j == 3) {
+        AIC_df$pred2[i] <- val_with_sig
+      } else if (j == 4) {
+        AIC_df$inter[i] <- val_with_sig
+      }
+    }
+  }
+  
+  AIC_df <- AIC_df[order(AIC_df$deltaAIC),]
+  
+  return(as.data.frame(AIC_df))
+}
+
+# AIC comparison
+AIC_tab <- function (models) {
+  
+  AICs <- sapply(models, get_AIC, simplify = FALSE)
+  # Create data frame with model names and AICs
+  AIC_df <- data.frame(Model = names(AICs), AIC = unlist(AICs), row.names = NULL)
+  # Calculate delta AICs
+  AIC_df$deltaAIC <- AIC_df$AIC - min(AIC_df$AIC)
+  # compute AIC weights
+  AIC_df$w = exp(-0.5 * AIC_df$deltaAIC) / sum(exp(-0.5 * AIC_df$deltaAIC))  
+  
+  AIC_df$evidence <- min(AIC_df$AIC) / AIC_df$AIC
+  
+  # Add city as column
+  #AIC_df$city <- rep(city, nrow(AIC_df))
+  # Sort the data frame by delta AIC
+  AIC_df <- AIC_df[order(AIC_df$deltaAIC),]
+  
+  return(AIC_df)
+}
+```
+
+# Data 1km²
+
+This is a $1km^2$ grid over the urban area of the city of São Paulo
+
+```{r data, include=FALSE}
+# sum of species
+shp <- st_read("Z:/Bianca/eBird/Data/1km_urb_f1km/richness_effort_v13_total_1km_urb_f1km_30min_10spp.shp")
+cdata <- shp
+
+# Rename columns
+cdata <- cdata %>% 
+  rename(
+    lpi_f = X1_lpi,
+    lpi_h = X2_lpi,
+    ed_f = X1_ed,
+    ed_h = X2_ed,
+    contig_f = X1_contig,
+    contig_h = X2_contig,
+    plant_f = X1_pland,
+    pland_h = X2_pland,
+    nlsi_f = X1_nlsi,
+    nlsi_h = X2_nlsi,
+    te_f = X1_te,
+    te_h = X2_te,
+    np_f = X1_np,
+    np_h = X2_np,
+    area_mn_f = X1_area_mn,
+    area_mn_h = X2_area_mn,
+    lpi_s = lpi_total,
+    ed_s = ed_total,
+    contig_s = contig_tot,
+    pland_s = pland_tota,
+    nlsi_s = nlsi_total,
+    te_s = te_total,
+    np_s = np_total,
+    area_mn_s = area_mn_to,
+    HISTO_NO = HISTO_NODA
+  )
+
+# Create columns
+cdata <- cdata %>% 
+  mutate(
+    area_mn_m = (area_mn_f + area_mn_h) / 2,
+    lpi_m = (lpi_f + lpi_h) / 2,
+    ed_m = (ed_f + ed_h) / 2,
+    contig_m = (contig_f + contig_h) / 2,
+    pland_m = (plant_f + pland_h) / 2,
+    nlsi_m = (nlsi_f + nlsi_h) / 2,
+    te_m = (te_f + te_h) / 2,
+    np_m = (np_f + np_h) / 2
+  )
+
+```
+
+
+### Richness
+The total number of species registered in each 1 km² grid cell
+
+```{r richness1km, echo=FALSE}
+# Calculating summary statistics
+summary_ric_1km <- summary(cdata$richness)
+summary_ric_1km
+
+# Boxplot 
+ggplot(cdata, aes(x = "", y = richness)) +
+  geom_boxplot(fill = "lightgray", color = "black", alpha = 0.7) + 
+  geom_jitter(color = "black", size = 2, alpha = 0.1) + 
+  labs(x = "", y = "Richness") +
+  theme_classic() + 
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 14)
+  )
+
+
+# Histogram
+ggplot(cdata, aes(x = richness)) +
+  geom_histogram(binwidth = 10, fill = "lightgray", color = "black", alpha = 0.7) + 
+  labs(x = "Richness", y = "Frequency") +
+  ggtitle("Richness") +
+  theme_classic() + 
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+```
+
+### Time effort
+Sum of the total time in minutes of independent sampling (filtered by person and by group).
+
+```{r effort1km, echo=FALSE}
+# Calculating summary statistics
+summary_eff_1km <- summary(richness_effort_1km_sp$effort)
+summary_eff_1km
+
+# Boxplot
+ggplot(cdata, aes(x = "", y = effort)) +
+  geom_boxplot(fill = "lightgray", color = "black", alpha = 0.7) + 
+  geom_jitter(color = "black", size = 2, alpha = 0.1) + 
+  labs(x = "", y = "Effort per cell (min)") +
+  theme_classic() + 
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 14)
+  )
+
+# Histogram with binwidth = 10 and xlim adjusted to 0-100
+ggplot(cdata, aes(x = effort / 60)) +
+  geom_histogram(binwidth = 10, fill = "lightgray", color = "black", alpha = 0.7) + 
+  labs(x = "Effort (hour)", y = "Frequency") +
+  ggtitle("Effort") +
+  coord_cartesian(xlim = c(0, 100)) +
+  theme_classic() + 
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Histogram with binwidth = 10 and xlim adjusted to 0-50
+ggplot(cdata, aes(x = effort / 60)) +
+  geom_histogram(binwidth = 10, fill = "lightgray", color = "black", alpha = 0.7) + 
+  labs(x = "Effort (hour)", y = "Frequency") +
+  ggtitle("Effort") +
+  coord_cartesian(xlim = c(0, 50)) +
+  theme_classic() + 
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Histogram with binwidth = 1
+ggplot(cdata, aes(x = effort / 60)) +
+  geom_histogram(binwidth = 1, fill = "lightgray", color = "black", alpha = 0.7) + 
+  labs(x = "Effort (hour)", y = "Frequency") +
+  ggtitle("Effort") +
+  theme_classic() + 
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+```
+
+
+# Variables
+
+There is high correlations among variables
+
+```{r, echo = FALSE}
+cor_mat <- as.data.frame(cdata)[c("SUVI", "SVI", "SGVI", "richness", "effort", "Bvol", "Bheight_me", "Vheight_me", "Wdistance", "Vvol", "pop", "shdi", "pland_s", "te_s", "np_s", "prop_veg", "SEVIn", "area_mn_m", "lpi_m", "ed_m", "contig_m", "nlsi_m")]
+suppressWarnings(chart.Correlation(cor_mat, histogram=TRUE, pch=16, method = "pearson"))
+```
+
+```{r, echo = FALSE}
+cor_mat <- as.data.frame(cdata)[c("richness", "SVI", "SEVIn", "SUVI", "SGVI")]
+suppressWarnings(chart.Correlation(cor_mat, histogram=TRUE, pch=16, method = "pearson"))
+```
+```{r, echo = FALSE}
+cor_mat <- as.data.frame(cdata)[c("richness", "effort", "Bvol", "Bheight_me", "Vheight_me", "Wdistance", "Vvol", "pop")]
+suppressWarnings(chart.Correlation(cor_mat, histogram=TRUE, pch=16, method = "pearson"))
+```
+
+```{r, echo = FALSE}
+cor_mat <- as.data.frame(cdata)[c("richness", "shdi", "pland_s", "te_s", "np_s", "area_mn_m", "lpi_m", "ed_m", "contig_m", "nlsi_m")]
+suppressWarnings(chart.Correlation(cor_mat, histogram=TRUE, pch=16, method = "pearson"))
+```
+```{r}
+rich_effort <- glm(richness ~ effort, data = cdata, family = poisson(link = "log"))
+AIC(rich_effort)
+
+summary(rich_effort)
+
+ggplot(cdata, aes(x = effort, y = richness)) +
+  geom_point() +  # Points for the observed data
+  labs(title = "Relationship between Effort and Richness",
+       x = "Effort",
+       y = "Richness") +
+  theme_minimal()
+
+```
+
+# Spatial
+
+Testing for spatial correlation
+
+```{r, echo=FALSE, warning=FALSE}
+coords <- st_centroid(cdata)
+nb <- poly2nb(cdata)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.mc(cdata$richness, lw, nsim = 999)
+```
+We see that there is a small spatial correlation
+
+Lets check the spatial distribuition of richness
+
+```{r, echo=FALSE, warning=FALSE}
+ggplot(data = cdata) +
+  geom_sf(aes(fill = richness), color = NA) +
+  scale_fill_viridis_c(direction = -1) +
+  custom_theme
+```
+
+# GLM
+
+Calculating the AIC for a null model to provide a baseline or reference point for comparison with other models that include predictors.
+
+```{r}
+null_model <- lm(richness ~ 1, cdata)
+AIC(lm(richness ~ 1, cdata))
+
+null_model_poisson <- glm(richness ~ 1, data = cdata, family = poisson(link = "log"))
+AIC(glm(richness ~ 1, data = cdata, family = poisson(link = "log")))
+```
+
+Different models for analyzing bird richness in the 1km range
+
+```{r, echo=FALSE, warning=FALSE}
+full_model <- glm(richness ~ SUVI + SVI + SGVI + SEVIn + effort + Bvol + Bheight_me + Vheight_me + Wdistance + Vvol + pop + shdi + pland_s + te_s + np_s + prop_veg + area_mn_m + lpi_m + ed_m + contig_m + nlsi_m, data = cdata, family = poisson(link = "log"))
+
+summary(full_model)
+
+
+# Get the summary of the model
+model_summary <- summary(full_model)
+coefficients <- model_summary$coefficients[, "Estimate"]
+standard_errors <- model_summary$coefficients[, "Std. Error"]
+
+# Combine them into a data frame
+effects_df <- data.frame(
+  Variable = names(coefficients),
+  EffectSize = coefficients,
+  StdError = standard_errors
+)
+
+# Create the plot
+ggplot(effects_df[-1,], aes(x = EffectSize, y = Variable)) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 0, colour="red", linetype = "dashed") +
+  geom_errorbarh(aes(xmin = EffectSize - StdError, xmax = EffectSize + StdError), height = 0.2) +
+  labs(x = "Effect Size", y = "") +
+  theme_bw()
+```
+```{r, echo=FALSE, warning=FALSE}
+sh_sp_model <- glm(richness ~ SVI + effort + SEVIn, data = cdata, family = poisson(link = "log"))
+
+summary(sh_sp_model)
+
+
+# Get the summary of the model
+sh_sp_model_summary <- summary(sh_sp_model)
+sh_sp_coefficients <- sh_sp_model_summary$coefficients[, "Estimate"]
+sh_sp_standard_errors <- sh_sp_model_summary$coefficients[, "Std. Error"]
+
+# Combine them into a data frame
+sh_sp_effects_df <- data.frame(
+  Variable = names(sh_sp_coefficients),
+  EffectSize = sh_sp_coefficients,
+  StdError = sh_sp_standard_errors
+)
+
+# Create the plot
+ggplot(sh_sp_effects_df[-1,], aes(x = EffectSize, y = Variable)) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 0, colour="red", linetype = "dashed") +
+  geom_errorbarh(aes(xmin = EffectSize - StdError, xmax = EffectSize + StdError), height = 0.2) +
+  labs(x = "Effect Size", y = "") +
+  theme_bw()
+```
+
+
+# Random forest
+
+```{r, echo=FALSE, warning=FALSE}
+data_rf <- data.frame(richness = cdata$richness,
+                      SUVI = cdata$SUVI,
+                      SVI = cdata$SVI,
+                      SGVI = cdata$SGVI,
+                      effort = cdata$effort,
+                      Bvol = cdata$Bvol,
+                      Bheight_me = cdata$Bheight_me,
+                      Vheight_me = cdata$Vheight_me,
+                      Wdistance = cdata$Wdistance,
+                      Vvol = cdata$Vvol,
+                      pop = cdata$pop,
+                      shdi = cdata$shdi,
+                      pland_s = cdata$pland_s,
+                      te_s = cdata$te_s,
+                      np_s = cdata$np_s,
+                      prop_veg = cdata$prop_veg,
+                      SEVIn = cdata$SEVIn,
+                      area_mn_m = cdata$area_mn_m,
+                      lpi_m = cdata$lpi_m,
+                      ed_m = cdata$ed_m,
+                      contig_m = cdata$contig_m,
+                      nlsi_m = cdata$nlsi_m,
+                      coord_x = cdata$centx,
+                      coord_y = cdata$centy)
+
+
+data_rf_clean <- na.omit(data_rf)
+
+# Fit Random Forest model
+rf_model <- randomForest(richness ~ ., data = data_rf_clean, importance = TRUE)
+
+# Summarize the model
+print(rf_model)
+# Check variable importance
+importance <- rf_model$importance
+print(importance)
+
+# Plot variable importance
+varImpPlot(rf_model)
+
+# Create a plot for variable importance
+importance_df <- data.frame(
+  Variable = rownames(importance),
+  Importance = importance[,1]
+)
+
+ggplot(importance_df, aes(x = reorder(Variable, Importance), y = Importance)) +
+  geom_bar(stat = 'identity') +
+  coord_flip() +
+  labs(title = 'Variable Importance', x = 'Variables', y = 'Importance') +
+  custom_theme
+```
+
+```{r, echo=FALSE, warning=FALSE}
+# Partial Dependence Plot for a single feature
+pdp_pop <- partial(rf_model, pred.var = "POP", plot = TRUE, rug = TRUE, train = data_rf)
+print(pdp_pop)
+
+# For multiple features
+pdp_sgvi <- partial(rf_model, pred.var = "SGVI", plot = TRUE, rug = TRUE, train = data_rf)
+print(pdp_sgvi)
+
+# For multiple features
+pdp_bv <- partial(rf_model, pred.var = "BV", plot = TRUE, rug = TRUE, train = data_rf)
+print(pdp_bv)
+
+# For multiple features
+pdp_sevi <- partial(rf_model, pred.var = "SEVI", plot = TRUE, rug = TRUE, train = data_rf)
+print(pdp_sevi)
+```

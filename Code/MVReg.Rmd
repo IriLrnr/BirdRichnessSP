@@ -1,0 +1,80 @@
+---
+title: "Assessing the Impact of Urban Infrastructure on Bird Biodiversity"
+author: "Bianca Neves & Irina Lerner"
+date: "02/09/24"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    theme: paper
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(ggplot2)
+library(sf)
+library(dplyr)
+library(mvpart)
+library(tidyr) # for organized code
+# customs
+custom_theme <- theme_minimal() +
+                theme(text = element_text(size = 12),
+                      plot.title = element_blank(),
+                      panel.grid.major = element_blank(),
+                      panel.grid.minor = element_blank())
+```
+
+```{r data, include=FALSE}
+# sum of species
+shp <- st_read("../Data/richness_effort_v13_total_1km_urb_f1km_30min_10spp.shp")
+cdata <- shp
+
+# Rename columns
+cdata <- cdata %>% 
+  rename(
+    lpi_f = X1_lpi,
+    lpi_h = X2_lpi,
+    ed_f = X1_ed,
+    ed_h = X2_ed,
+    contig_f = X1_contig,
+    contig_h = X2_contig,
+    plant_f = X1_pland,
+    pland_h = X2_pland,
+    nlsi_f = X1_nlsi,
+    nlsi_h = X2_nlsi,
+    te_f = X1_te,
+    te_h = X2_te,
+    np_f = X1_np,
+    np_h = X2_np,
+    area_mn_f = X1_area_mn,
+    area_mn_h = X2_area_mn,
+    lpi_s = lpi_total,
+    ed_s = ed_total,
+    contig_s = contig_tot,
+    pland_s = pland_tota,
+    nlsi_s = nlsi_total,
+    te_s = te_total,
+    np_s = np_total,
+    area_mn_s = area_mn_to,
+    HISTO_NO = HISTO_NODA
+  )
+
+# Create columns
+cdata <- cdata %>% 
+  mutate(
+    area_mn_m = (area_mn_f + area_mn_h) / 2,
+    lpi_m = (lpi_f + lpi_h) / 2,
+    ed_m = (ed_f + ed_h) / 2,
+    contig_m = (contig_f + contig_h) / 2,
+    pland_m = (plant_f + pland_h) / 2,
+    nlsi_m = (nlsi_f + nlsi_h) / 2,
+    te_m = (te_f + te_h) / 2,
+    np_m = (np_f + np_h) / 2
+  )
+
+```
+
+
