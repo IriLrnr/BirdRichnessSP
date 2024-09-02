@@ -110,7 +110,7 @@ pa <- as.data.frame(presence_absence)
 
 ```{r, echo=FALSE}
 # Define the training datasets
-X <- as.data.frame(cdata) %>% select(prop_veg, SGVI, SVI, SUVI, SEVIn, contig_m, shdi, area_mn_m, nlsi_m)
+X <- as.data.frame(cdata) %>% select(SVI, SGVI)
 #X_train <- train_data %>% select(SVI, SGVI, SUVI)
 Y <- as.data.frame(pa)
 
@@ -118,7 +118,7 @@ mvpart_model <- mvpart(as.matrix(Y) ~ ., data = X,
                     xv = "1se", # select smallest tree within 1 se
                     xval = nrow(Y), # number of cross-validations
                     xvmult = 10, # number of multiple cross-validations
-                    size = 6,
-                    which = 1,
+                    size = 6, # tree size
+                    which = 4, # show legend
                     legend = FALSE, margin = 0.01, cp = 0, prn = F)
 ```
