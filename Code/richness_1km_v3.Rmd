@@ -137,7 +137,8 @@ This is a $1km^2$ grid over the urban area of the city of São Paulo
 
 ```{r data, include=FALSE}
 # sum of species
-shp <- st_read("Z:/Bianca/eBird/Data/1km_urb_f1km/richness_effort_v13_total_1km_urb_f1km_30min_10spp.shp")
+#shp <- st_read("Z:/Bianca/eBird/Data/1km_urb_f1km/richness_effort_v13_total_1km_urb_f1km_30min_10spp.shp")
+shp <- st_read("C:/Users/Bianca/Documents/USP/Projeto/eBird/Data/1km/richness_effort_v13_total_1km_urb_f1km_30min_10spp.shp")
 cdata <- shp
 
 # Rename columns
@@ -183,6 +184,9 @@ cdata <- cdata %>%
     np_m = (np_f + np_h) / 2
   )
 
+cdata <- cdata %>%
+  arrange(id)
+
 ```
 
 
@@ -227,7 +231,7 @@ Sum of the total time in minutes of independent sampling (filtered by person and
 
 ```{r effort1km, echo=FALSE}
 # Calculating summary statistics
-summary_eff_1km <- summary(richness_effort_1km_sp$effort)
+summary_eff_1km <- summary(cdata$effort)
 summary_eff_1km
 
 # Boxplot
@@ -307,19 +311,41 @@ suppressWarnings(chart.Correlation(cor_mat, histogram=TRUE, pch=16, method = "pe
 cor_mat <- as.data.frame(cdata)[c("richness", "shdi", "pland_s", "te_s", "np_s", "area_mn_m", "lpi_m", "ed_m", "contig_m", "nlsi_m")]
 suppressWarnings(chart.Correlation(cor_mat, histogram=TRUE, pch=16, method = "pearson"))
 ```
-```{r}
-rich_effort <- glm(richness ~ effort, data = cdata, family = poisson(link = "log"))
-AIC(rich_effort)
-
-summary(rich_effort)
-
+```{r, echo = FALSE}
+# Scatter plot with effort and richness
 ggplot(cdata, aes(x = effort, y = richness)) +
-  geom_point() +  # Points for the observed data
+  geom_point(size = 2, color = "black", alpha = 0.7) +  
   labs(title = "Relationship between Effort and Richness",
        x = "Effort",
        y = "Richness") +
-  theme_minimal()
+  theme_classic() + 
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
 
+# Model
+rich_effort <- glm(richness ~ effort, data = cdata, family = poisson(link = "log"))
+AIC(rich_effort)
+summary(rich_effort)
+cdata$predicted_richness <- predict(rich_effort, type = "response")
+
+# Scatter plot with predictions
+ggplot(cdata, aes(x = effort, y = richness)) +
+  geom_point(size = 2, color = "black", alpha = 0.7) +  
+  geom_line(aes(y = predicted_richness), color = "blue", linewidth = 1, alpha = 0.9) +  
+  labs(title = "Relationship between Effort and Richness",
+       x = "Effort",
+       y = "Richness") +
+  theme_classic() + 
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
 ```
 
 # Spatial
@@ -409,7 +435,32 @@ ggplot(sh_sp_effects_df[-1,], aes(x = EffectSize, y = Variable)) +
   labs(x = "Effect Size", y = "") +
   theme_bw()
 ```
+```{r, echo=FALSE, warning=FALSE}
+full_model <- glm(richness ~ effort + Bvol + Bheight_me + Vheight_me + Wdistance + Vvol + pop + shdi + pland_s + te_s + np_s + area_mn_m + lpi_m + ed_m + contig_m + nlsi_m, data = cdata, family = poisson(link = "log"))
 
+summary(full_model)
+
+
+# Get the summary of the model
+model_summary <- summary(full_model)
+coefficients <- model_summary$coefficients[, "Estimate"]
+standard_errors <- model_summary$coefficients[, "Std. Error"]
+
+# Combine them into a data frame
+effects_df <- data.frame(
+  Variable = names(coefficients),
+  EffectSize = coefficients,
+  StdError = standard_errors
+)
+
+# Create the plot
+ggplot(effects_df[-1,], aes(x = EffectSize, y = Variable)) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 0, colour="red", linetype = "dashed") +
+  geom_errorbarh(aes(xmin = EffectSize - StdError, xmax = EffectSize + StdError), height = 0.2) +
+  labs(x = "Effect Size", y = "") +
+  theme_bw()
+```
 
 # Random forest
 
@@ -484,3 +535,4 @@ print(pdp_bv)
 pdp_sevi <- partial(rf_model, pred.var = "SEVI", plot = TRUE, rug = TRUE, train = data_rf)
 print(pdp_sevi)
 ```
+
