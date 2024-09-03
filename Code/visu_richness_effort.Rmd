@@ -93,7 +93,7 @@ Sum of the total time in minutes of independent sampling (filtered by person and
 ggplot(combined_data, aes(x = effort * 60, fill = scale)) +
   geom_density(alpha = 0.5) +
   labs(x = "Effort (hours)", y = "Density") +
-  ggtitle("Time effort by rcale") +
+  ggtitle("Time effort by scale") +
   theme_classic() +
   theme(
     legend.position = "bottom",
