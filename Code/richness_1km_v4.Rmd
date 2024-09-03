@@ -1,0 +1,570 @@
+---
+title: "Assessing the Impact of Urban Infrastructure on Bird Biodiversity"
+author: "Bianca Neves & Irina Lerner"
+date: "30/08/24"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    theme: paper
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(ggplot2)
+library(dplyr)
+library(PerformanceAnalytics) # for correlation matrix
+library(tidyr) # for organized code
+library(sf, sp) # for reading shp and ploting
+library(spdep)
+library(ggeffects)
+library(spaMM)
+library(mgcv)
+library(randomForest)
+library(pdp)
+library(glmnet)
+library(vegan)
+# customs
+custom_theme <- theme_minimal() +
+                theme(text = element_text(size = 12),
+                      plot.title = element_blank(),
+                      panel.grid.major = element_blank(),
+                      panel.grid.minor = element_blank())
+
+# fitme models
+spatial_models <- function(data_df, response, predictors, family=gaussian) {
+  # Create a list of formulas based on predictors adding random effects
+  formulas <- lapply(predictors, function(x) {
+    as.formula(paste(response, "~", x, "+ Matern(1 | centx + centy)"))
+  })
+  
+  # Fit the models using fitme
+  
+  avail_thr <- parallel::detectCores(logical=FALSE) - 1L 
+  
+  models <- lapply(formulas, function(f) {
+    fitme(formula = f, data = data_df, family = family,
+          fixed=list(longdep=0.5,shape=0.5,rho=0.05),
+          control.HLfit=list(NbThreads=max(avail_thr, 1L), 
+                             algebra="spcorr"))
+  })
+  
+  # Name the models for easy reference
+  names(models) <- predictors
+  
+  # Return the list of models
+  return(models)
+}
+
+get_AIC <- function(model) {
+  as.numeric((AIC.HLfit(model))[1])
+}
+
+AIC_eff_tab <- function(models, name) {
+  # Initialize AICs and effect sizes
+  AICs <- sapply(models, get_AIC, simplify = FALSE)
+  
+  AIC_df <- data.frame(Class = name, Model = names(AICs), AIC = round(unlist(AICs), 4), row.names = NULL)
+  AIC_df$deltaAIC <- round(AIC_df$AIC - min(AIC_df$AIC), 4)
+  
+  AIC_df$pred1 <- ""
+  AIC_df$pred2 <- ""
+  AIC_df$inter <- ""
+  
+  for (i in 1:length(models)) {
+    fe <- fixef(models[[i]])
+    se <- sqrt(diag(vcov(models[[i]])))
+    tvals <- fe / se
+    
+    for (j in 2:min(length(fe), 4)) { # Ensure we don't exceed the number of available predictors
+      sig <- "" # Initialize sig as an empty string
+      
+      # Check if tvals[j] is not NA before proceeding with the comparison
+      if (!is.na(tvals[j])) {
+        if (abs(tvals[j]) < 1.96) sig <- ""
+        if (abs(tvals[j]) >= 1.96) sig <- "*"      # p < 0.05
+        if (abs(tvals[j]) > 2.576) sig <- "**" # p < 0.01
+        if (abs(tvals[j]) > 3.291) sig <- "*"# p < 0.001
+      }
+      
+      # Round the effect size before converting to string and appending significance markers
+      rounded_effect_size <- round(as.numeric(fe[j]), 4)
+      val_with_sig <- if (!is.na(fe[j])) paste0(rounded_effect_size, sig) else ""
+      
+      if (j == 2) {
+        AIC_df$pred1[i] <- val_with_sig
+      } else if (j == 3) {
+        AIC_df$pred2[i] <- val_with_sig
+      } else if (j == 4) {
+        AIC_df$inter[i] <- val_with_sig
+      }
+    }
+  }
+  
+  AIC_df <- AIC_df[order(AIC_df$deltaAIC),]
+  
+  return(as.data.frame(AIC_df))
+}
+
+# AIC comparison
+AIC_tab <- function (models) {
+  
+  AICs <- sapply(models, get_AIC, simplify = FALSE)
+  # Create data frame with model names and AICs
+  AIC_df <- data.frame(Model = names(AICs), AIC = unlist(AICs), row.names = NULL)
+  # Calculate delta AICs
+  AIC_df$deltaAIC <- AIC_df$AIC - min(AIC_df$AIC)
+  # compute AIC weights
+  AIC_df$w = exp(-0.5 * AIC_df$deltaAIC) / sum(exp(-0.5 * AIC_df$deltaAIC))  
+  
+  AIC_df$evidence <- min(AIC_df$AIC) / AIC_df$AIC
+  
+  # Add city as column
+  #AIC_df$city <- rep(city, nrow(AIC_df))
+  # Sort the data frame by delta AIC
+  AIC_df <- AIC_df[order(AIC_df$deltaAIC),]
+  
+  return(AIC_df)
+}
+```
+
+# Data 1km²
+
+This is a $1km^2$ grid over the urban area of the city of São Paulo
+
+```{r data, include=FALSE}
+# sum of species
+#shp <- st_read("Z:/Bianca/eBird/Data/1km_urb_f1km/richness_effort_v13_total_1km_urb_f1km_30min_10spp.shp")
+shp <- st_read("C:/Users/Bianca/Documents/USP/Projeto/eBird/Data/1km/richness_effort_v13_total_1km_urb_f1km_30min_10spp.shp")
+cdata <- shp
+
+# Rename columns
+cdata <- cdata %>% 
+  rename(
+    lpi_f = X1_lpi,
+    lpi_h = X2_lpi,
+    ed_f = X1_ed,
+    ed_h = X2_ed,
+    contig_f = X1_contig,
+    contig_h = X2_contig,
+    plant_f = X1_pland,
+    pland_h = X2_pland,
+    nlsi_f = X1_nlsi,
+    nlsi_h = X2_nlsi,
+    te_f = X1_te,
+    te_h = X2_te,
+    np_f = X1_np,
+    np_h = X2_np,
+    area_mn_f = X1_area_mn,
+    area_mn_h = X2_area_mn,
+    lpi_s = lpi_total,
+    ed_s = ed_total,
+    contig_s = contig_tot,
+    pland_s = pland_tota,
+    nlsi_s = nlsi_total,
+    te_s = te_total,
+    np_s = np_total,
+    area_mn_s = area_mn_to,
+    HISTO_NO = HISTO_NODA
+  )
+
+# Create columns
+cdata <- cdata %>% 
+  mutate(
+    area_mn_m = (area_mn_f + area_mn_h) / 2,
+    lpi_m = (lpi_f + lpi_h) / 2,
+    ed_m = (ed_f + ed_h) / 2,
+    contig_m = (contig_f + contig_h) / 2,
+    pland_m = (plant_f + pland_h) / 2,
+    nlsi_m = (nlsi_f + nlsi_h) / 2,
+    te_m = (te_f + te_h) / 2,
+    np_m = (np_f + np_h) / 2
+  )
+
+cdata <- cdata %>%
+  arrange(id)
+
+```
+
+# Variables
+
+There is high correlations among variables
+
+```{r, echo = FALSE}
+cor_mat <- as.data.frame(cdata)[c("SUVI", "SVI", "SGVI", "richness", "effort", "Bvol", "Bheight_me", "Vheight_me", "Wdistance", "Vvol", "pop", "shdi", "pland_s", "te_s", "np_s", "prop_veg", "SEVIn", "area_mn_m", "lpi_m", "ed_m", "contig_m", "nlsi_m")]
+suppressWarnings(chart.Correlation(cor_mat, histogram=TRUE, pch=16, method = "pearson"))
+```
+
+```{r, echo = FALSE}
+cor_mat <- as.data.frame(cdata)[c("richness", "SVI", "SEVIn", "SUVI", "SGVI")]
+suppressWarnings(chart.Correlation(cor_mat, histogram=TRUE, pch=16, method = "pearson"))
+```
+```{r, echo = FALSE}
+cor_mat <- as.data.frame(cdata)[c("richness", "effort", "Bvol", "Bheight_me", "Vheight_me", "Wdistance", "Vvol", "pop")]
+suppressWarnings(chart.Correlation(cor_mat, histogram=TRUE, pch=16, method = "pearson"))
+```
+
+```{r, echo = FALSE}
+cor_mat <- as.data.frame(cdata)[c("richness", "shdi", "pland_s", "te_s", "np_s", "area_mn_m", "lpi_m", "ed_m", "contig_m", "nlsi_m")]
+suppressWarnings(chart.Correlation(cor_mat, histogram=TRUE, pch=16, method = "pearson"))
+```
+```{r, echo = FALSE}
+# Scatter plot with effort and richness
+ggplot(cdata, aes(x = effort, y = richness)) +
+  geom_point(size = 2, color = "black", alpha = 0.7) +  
+  labs(title = "Relationship between Effort and Richness",
+       x = "Effort",
+       y = "Richness") +
+  theme_classic() + 
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Model
+rich_effort <- glm(richness ~ effort, data = cdata, family = poisson(link = "log"))
+AIC(rich_effort)
+summary(rich_effort)
+cdata$predicted_richness <- predict(rich_effort, type = "response")
+
+# Scatter plot with predictions
+ggplot(cdata, aes(x = effort, y = richness)) +
+  geom_point(size = 2, color = "black", alpha = 0.7) +  
+  geom_line(aes(y = predicted_richness), color = "blue", linewidth = 1, alpha = 0.9) +  
+  labs(title = "Relationship between Effort and Richness",
+       x = "Effort",
+       y = "Richness") +
+  theme_classic() + 
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+```
+
+# Spatial
+
+Testing for spatial correlation
+
+```{r, echo=FALSE, warning=FALSE}
+coords <- st_centroid(cdata)
+nb <- poly2nb(cdata)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.mc(cdata$richness, lw, nsim = 999)
+```
+We see that there is a small spatial correlation
+
+Lets check the spatial distribuition of richness
+
+```{r, echo=FALSE, warning=FALSE}
+ggplot(data = cdata) +
+  geom_sf(aes(fill = richness), color = NA) +
+  scale_fill_viridis_c(direction = -1) +
+  custom_theme
+```
+
+
+
+# Lasso e ridge selection
+We use lasso and ridge regression, a method that penalizes variables for multicolinearity and selects significant variables.
+
+```{r, echo=FALSE, warning=FALSE}
+variables <- c("SUVI", "SVI", "SGVI", "SEVIn", "effort", "Bvol", "Bheight_me", "Vheight_me", "Wdistance", "Vvol", "pop", "shdi", "pland_s", "te_s", "np_s", "prop_veg", "area_mn_m", "lpi_m", "ed_m", "contig_m", "nlsi_m")
+
+cdata[is.na(cdata)] <- 0
+
+X <- as.matrix(as.data.frame(cdata)[, variables])
+richness <- cdata$richness
+
+lasso_model <- cv.glmnet(X, richness, family = "poisson", alpha = 1)
+ridge_model <- cv.glmnet(X, richness, family = "poisson", alpha = 0)
+
+lasso_coefs <- coef(lasso_model, s = "lambda.min")
+ridge_coefs <- coef(ridge_model, s = "lambda.min")
+
+# Prepare data for plotting
+variable_names <- rownames(lasso_coefs)[-1]  # Exclude intercept
+lasso_effect_sizes <- lasso_coefs[-1, 1]  # Exclude intercept
+ridge_effect_sizes <- ridge_coefs[-1, 1]  # Exclude intercept
+
+# Create a data frame
+effect_sizes_df <- data.frame(
+  Variable = variable_names,
+  Lasso = lasso_effect_sizes,
+  Ridge = ridge_effect_sizes
+)
+
+# Reshape data for ggplot2
+effect_sizes_long <- gather(effect_sizes_df, key = "Model", value = "EffectSize", -Variable)
+
+# Create the plot
+ggplot(effect_sizes_long, aes(x = EffectSize, y = Variable, color = Model)) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey") +
+  labs(x = "Effect Size", y = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 10))
+
+# Fit a model (Lasso or Ridge) with cross-validation to find the best lambda
+cv_fit <- cv.glmnet(X, richness, alpha = 1)  # alpha = 1 for Lasso, 0 for Ridge
+
+# Extract the best lambda value from cross-validation
+best_lambda <- cv_fit$lambda.min
+
+# Fit the final model using the best lambda
+best_model <- glmnet(X, richness, alpha = 1, lambda = best_lambda)
+
+# Predict on the training data using the best model
+richness_pred <- predict(best_model, newx = X)
+
+# Calculate R-squared manually
+sst <- sum((richness - mean(richness))^2)  # Total sum of squares
+sse <- sum((richness - richness_pred)^2)   # Sum of squared errors
+r2 <- 1 - (sse / sst)
+cat("R-squared: ", r2, "\n")
+
+```
+
+
+
+# Fit the initial RDA model with all environmental variables
+```{r, echo=FALSE, warning=FALSE}
+# Ajustar o modelo inicial com CCA
+initial_model <- cca(richness ~ SUVI + SVI + SGVI + SEVIn + effort + Bvol + Bheight_me + Vheight_me + Wdistance + Vvol + pop + shdi + pland_s + te_s + np_s + prop_veg + area_mn_m + lpi_m + ed_m + contig_m + nlsi_m, data = cdata)
+
+# Visualizar o resumo do modelo inicial
+summary(initial_model)
+
+# Realizar a seleção passo a passo usando forward e backward selection com base no R2 ajustado
+# Note que ordiR2step pode não estar disponível para todos os tipos de modelos e pode precisar de uma abordagem alternativa.
+stepwise_model <- ordistep(initial_model, 
+                             scope = formula(initial_model), 
+                             direction = "both",  # "forward", "backward", or "both"
+                             R2scope = TRUE,  # Considerar o R2 ajustado
+                             pstep = 1000,  # Número de permutações
+                             trace = TRUE)  # Imprimir progresso
+
+# Visualizar o resumo do modelo selecionado
+summary(stepwise_model)
+
+```
+
+
+
+
+# GLM
+
+Calculating the AIC for a null model to provide a baseline or reference point for comparison with other models that include predictors.
+
+```{r}
+null_model <- lm(richness ~ 1, cdata)
+AIC(lm(richness ~ 1, cdata))
+
+null_model_poisson <- glm(richness ~ 1, data = cdata, family = poisson(link = "log"))
+AIC(glm(richness ~ 1, data = cdata, family = poisson(link = "log")))
+```
+
+Different models for analyzing bird richness in the 1km range
+
+```{r, echo=FALSE, warning=FALSE}
+full_model <- glm(richness ~ SUVI + SVI + SGVI + SEVIn + effort + Bvol + Bheight_me + Vheight_me + Wdistance + Vvol + pop + shdi + pland_s + te_s + np_s + prop_veg + area_mn_m + lpi_m + ed_m + contig_m + nlsi_m, data = cdata, family = poisson(link = "log"))
+
+summary(full_model)
+
+
+# Get the summary of the model
+model_summary <- summary(full_model)
+coefficients <- model_summary$coefficients[, "Estimate"]
+standard_errors <- model_summary$coefficients[, "Std. Error"]
+
+# Combine them into a data frame
+effects_df <- data.frame(
+  Variable = names(coefficients),
+  EffectSize = coefficients,
+  StdError = standard_errors
+)
+
+# Create the plot
+ggplot(effects_df[-1,], aes(x = EffectSize, y = Variable)) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 0, colour="red", linetype = "dashed") +
+  geom_errorbarh(aes(xmin = EffectSize - StdError, xmax = EffectSize + StdError), height = 0.2) +
+  labs(x = "Effect Size", y = "") +
+  theme_bw()
+
+
+```
+
+```{r, echo=FALSE, warning=FALSE}
+full_model <- glm(richness ~ SUVI + SVI + SGVI + SEVIn + effort + Bvol + Bheight_me + Vheight_me + Wdistance + Vvol + pop + shdi + pland_s + te_s + np_s + prop_veg + area_mn_m + lpi_m + ed_m + contig_m + nlsi_m, data = cdata, family = poisson(link = "log"))
+
+# Realizar a seleção de variáveis
+stepwise_model <- step(full_model, direction = "both", trace = TRUE)
+
+# Visualizar o resumo do modelo selecionado
+summary(stepwise_model)
+
+```
+
+```{r, echo=FALSE, warning=FALSE}
+selected <- glm(formula = richness ~ SUVI + SVI + SGVI + effort + Bvol + 
+    Bheight_me + Vheight_me + Vvol + pop + shdi + te_s + np_s + 
+    prop_veg + area_mn_m + lpi_m + contig_m + nlsi_m, family = poisson(link = "log"), 
+    data = cdata)
+summary(selected)
+
+# Ajuste o modelo nulo
+null_model <- glm(richness ~ 1, family = poisson(link = "log"), data = cdata)
+
+# Log-likelihood do modelo completo
+logLik_full <- logLik(selected)
+
+# Log-likelihood do modelo nulo
+logLik_null <- logLik(null_model)
+
+# Calcule o pseudo R^2 de McFadden
+pseudo_r2 <- 1 - (logLik_full / logLik_null)
+print(pseudo_r2)
+
+# Instale e carregue o pacote pscl
+install.packages("pscl")
+library(pscl)
+
+# Calcule o pseudo R^2 usando o pacote pscl
+pseudo_r2_values <- pR2(selected)
+print(pseudo_r2_values)
+
+```
+
+```{r, echo=FALSE, warning=FALSE}
+sh_sp_model <- glm(richness ~ SVI + effort + SEVIn, data = cdata, family = poisson(link = "log"))
+
+summary(sh_sp_model)
+
+
+# Get the summary of the model
+sh_sp_model_summary <- summary(sh_sp_model)
+sh_sp_coefficients <- sh_sp_model_summary$coefficients[, "Estimate"]
+sh_sp_standard_errors <- sh_sp_model_summary$coefficients[, "Std. Error"]
+
+# Combine them into a data frame
+sh_sp_effects_df <- data.frame(
+  Variable = names(sh_sp_coefficients),
+  EffectSize = sh_sp_coefficients,
+  StdError = sh_sp_standard_errors
+)
+
+# Create the plot
+ggplot(sh_sp_effects_df[-1,], aes(x = EffectSize, y = Variable)) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 0, colour="red", linetype = "dashed") +
+  geom_errorbarh(aes(xmin = EffectSize - StdError, xmax = EffectSize + StdError), height = 0.2) +
+  labs(x = "Effect Size", y = "") +
+  theme_bw()
+```
+
+```{r, echo=FALSE, warning=FALSE}
+full_model <- glm(richness ~ effort + Bvol + Bheight_me + Vheight_me + Wdistance + Vvol + pop + shdi + pland_s + te_s + np_s + area_mn_m + lpi_m + ed_m + contig_m + nlsi_m, data = cdata, family = poisson(link = "log"))
+
+summary(full_model)
+
+
+# Get the summary of the model
+model_summary <- summary(full_model)
+coefficients <- model_summary$coefficients[, "Estimate"]
+standard_errors <- model_summary$coefficients[, "Std. Error"]
+
+# Combine them into a data frame
+effects_df <- data.frame(
+  Variable = names(coefficients),
+  EffectSize = coefficients,
+  StdError = standard_errors
+)
+
+# Create the plot
+ggplot(effects_df[-1,], aes(x = EffectSize, y = Variable)) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 0, colour="red", linetype = "dashed") +
+  geom_errorbarh(aes(xmin = EffectSize - StdError, xmax = EffectSize + StdError), height = 0.2) +
+  labs(x = "Effect Size", y = "") +
+  theme_bw()
+```
+
+# Random forest
+
+```{r, echo=FALSE, warning=FALSE}
+data_rf <- data.frame(richness = cdata$richness,
+                      SUVI = cdata$SUVI,
+                      SVI = cdata$SVI,
+                      SGVI = cdata$SGVI,
+                      effort = cdata$effort,
+                      Bvol = cdata$Bvol,
+                      Bheight_me = cdata$Bheight_me,
+                      Vheight_me = cdata$Vheight_me,
+                      Wdistance = cdata$Wdistance,
+                      Vvol = cdata$Vvol,
+                      pop = cdata$pop,
+                      shdi = cdata$shdi,
+                      pland_s = cdata$pland_s,
+                      te_s = cdata$te_s,
+                      np_s = cdata$np_s,
+                      prop_veg = cdata$prop_veg,
+                      SEVIn = cdata$SEVIn,
+                      area_mn_m = cdata$area_mn_m,
+                      lpi_m = cdata$lpi_m,
+                      ed_m = cdata$ed_m,
+                      contig_m = cdata$contig_m,
+                      nlsi_m = cdata$nlsi_m)
+
+
+data_rf_clean <- na.omit(data_rf)
+
+# Fit Random Forest model
+rf_model <- randomForest(richness ~ ., data = data_rf_clean, importance = TRUE)
+
+# Summarize the model
+print(rf_model)
+# Check variable importance
+importance <- rf_model$importance
+print(importance)
+
+# Plot variable importance
+varImpPlot(rf_model)
+
+# Create a plot for variable importance
+importance_df <- data.frame(
+  Variable = rownames(importance),
+  Importance = importance[,1]
+)
+
+ggplot(importance_df, aes(x = reorder(Variable, Importance), y = Importance)) +
+  geom_bar(stat = 'identity') +
+  coord_flip() +
+  labs(title = 'Variable Importance', x = 'Variables', y = 'Importance') +
+  custom_theme
+```
+
+```{r, echo=FALSE, warning=FALSE}
+# Partial Dependence Plot for a single feature
+pdp_pop <- partial(rf_model, pred.var = "lpi_m", plot = TRUE, rug = TRUE, train = data_rf)
+print(pdp_pop)
+
+# For multiple features
+pdp_sgvi <- partial(rf_model, pred.var = "area_mn_m", plot = TRUE, rug = TRUE, train = data_rf)
+print(pdp_sgvi)
+
+# For multiple features
+pdp_bv <- partial(rf_model, pred.var = "SGVI", plot = TRUE, rug = TRUE, train = data_rf)
+print(pdp_bv)
+
+# For multiple features
+pdp_sevi <- partial(rf_model, pred.var = "Bvol", plot = TRUE, rug = TRUE, train = data_rf)
+print(pdp_sevi)
+```
+
