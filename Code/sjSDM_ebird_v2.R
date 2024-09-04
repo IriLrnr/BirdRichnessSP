@@ -10,7 +10,7 @@ library(car)
 
 #### Dados de ocorrência ####
 # 1. Ler o arquivo shapefile
-sp <- st_read("Z:/Bianca/eBird/Data/1km_urb_f1km/ebd_total_v6_1km_urb_f1km_30min.shp")
+sp <- st_read("../Data/ebd_total_1km_urb_f1km_30min_10spp.shp")
 
 # 2. Criar uma tabela de espécies únicas e IDs de grade
 unique_species <- unique(sp$scntfc_)
@@ -37,11 +37,11 @@ pa <- as.data.frame(presence_absence)
 
 #### Dados ambientais ####
 # 1. Ler o arquivo shapefile
-shp <- st_read("Z:/Bianca/eBird/Data/1km_urb_f1km/richness_effort_v10_total_1km_urb_f1km_30min.shp")
+shp <- st_read("../Data/richness_effort_v16_total_1km_urb_f1km_30min_10spp.shp")
 
 # 2. Selecionar apenas as colunas de interesse
-colunas_interesse <- c("id", "effort", "Bvol", "Vvol", "area_mn", "np", "shdi")
-amb <- shp[, colunas_interesse]
+colunas_interesse <- c("id", "effort", "shdi", "SGVI", "SVI")
+amb <- as.data.frame(shp)[, colunas_interesse]
 
 # 3. Ordenar o data frame pelo ID
 amb <- amb[order(amb$id), ]
@@ -49,9 +49,14 @@ amb <- amb[order(amb$id), ]
 # 4. Transformar NA em 0
 amb[is.na(amb)] <- 0
 
+# 2. Scale the environmental variables (excluding 'id')
+amb_scaled <- amb
+amb_scaled[, -1] <- scale(amb[, -1]) # Exclude the first column ('id') from scaling
+
+
 #### Dados espaciais ####
 # 1. Calcular os centroides dos polígonos
-centroids <- st_centroid(shp)
+centroids <- st_centroid(shp[order(shp$id),])
 
 # 2. Extrair as coordenadas centroides
 coords <- st_coordinates(centroids)
@@ -59,45 +64,62 @@ coords <- st_coordinates(centroids)
 # 3. Criar um data frame com as colunas id, coord_x e coord_y
 coord <- data.frame(
   id = shp$id, 
-  coord_x = coords[, 1], 
-  coord_y = coords[, 2]
+  coord_x = scale(coords[, 1]), 
+  coord_y = scale(coords[, 2])
 )
 
-# 4. Ordenar o data frame pelo id
-coord <- coord[order(coord$id), ]
-
 #### Verificar colinearidade ####
-verif <- lm(richness ~ effort + Bvol + Vvol + area_mn + np + shdi, data = shp)
+verif <- lm(richness ~ effort +  shdi + SGVI, data = shp)
 vif(verif)
 
+species_vector <- c(
+  "Columba livia",
+  "Leptotila verreauxi",
+  "Columbina talpacoti",
+  "Piaya cayana",
+  #"Piculus flavigula",
+  "Caracara plancus",
+  "Sclerurus scansor",
+  "Furnarius rufus",
+  "Sirystes sibilator",
+  "Fluvicola nengeta",
+  "Turdus leucomelas",
+  "Turdus rufiventris",
+  "Euphonia chlorotica",
+  "Dacnis cayana",
+  "Saltator similis",
+  #"Ramphocelus bresilia",
+  "Thraupis palmarum"
+)
+Occ <- as.matrix(pa[, species_vector])
+
 #### Verificações e Ajustes ####
-Env <- amb %>% select(-id)
-Occ <- pa
-Occ <- as.matrix(Occ)
-SP <- coord %>% select(-id)
+Env <- amb_scaled %>% select(-id)
+#Occ <- as.matrix(pa)
+Occ <- as.matrix(pa[, species_vector])
+SP <- as.matrix(coord %>% select(-id))
 
 # Remover variáveis constantes do Env e SP
-Env <- Env[, sapply(Env, function(x) length(unique(x)) > 1)]
-SP <- SP[, sapply(SP, function(x) length(unique(x)) > 1)]
+#Env <- Env[, sapply(Env, function(x) length(unique(x)) > 1)]
+#SP <- SP[, sapply(SP, function(x) length(unique(x)) > 1)]
 
 # Verificar e remover coordenadas duplicadas
-if (sum(duplicated(SP)) > 0) {
-  SP <- SP[!duplicated(SP), ]
-}
+#if (sum(duplicated(SP)) > 0) {
+#  SP <- SP[!duplicated(SP), ]
+#}
 
 # Garantir a remoção completa de NAs
 Env[is.na(Env)] <- 0
 SP[is.na(SP)] <- 0
 
 # Remover colunas com variância zero
-Env <- Env[, apply(Env, 2, function(x) var(x, na.rm = TRUE) != 0)]
-SP <- SP[, apply(SP, 2, function(x) var(x, na.rm = TRUE) != 0)]
+#Env <- Env[, apply(as.data.frame(Env)[,1:4], 2, function(x) var(x, na.rm = TRUE) != 0)]
+#SP <- SP[, apply(SP, 2, function(x) var(x, na.rm = TRUE) != 0)]
 
-#### sjSDM model ####
 model <- sjSDM(
   Y = Occ,
-  env = linear(data = Env, formula = ~ effort + Bvol + Vvol + area_mn + np + shdi),
-  spatial = linear(data = SP, formula = ~0 + coord_x:coord_y),
+  env = linear(data = (Env), formula = ~ effort + SGVI + shdi),
+  spatial = linear(data = SP, formula = ~0+coord_x:coord_y),
   se = TRUE,
   family = binomial("probit"),
   sampling = 419L
@@ -107,3 +129,13 @@ summary(model)
 
 # Model
 plot(model)
+
+# How to interpret?
+image(getCor(model))
+
+an = anova(model, verbose = T)
+summary(an)
+
+
+plot(an)
+
