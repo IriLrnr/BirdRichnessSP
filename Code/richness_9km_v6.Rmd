@@ -37,9 +37,9 @@ custom_theme <- theme_minimal() +
                       panel.grid.minor = element_blank())
 ```
 
-# Data 1km²
+# Data 9km²
 
-This is a $1km^2$ grid over the urban area of the city of São Paulo
+This is a $9km^2$ grid over the urban area of the city of São Paulo
 
 ```{r data, include=FALSE}
 # sum of species
@@ -69,7 +69,11 @@ cdata <- cdata %>%
     area_mn_tot = area_mn_to)
 
 cdata <- cdata %>%
-  mutate(across(everything(), ~ replace_na(., 0)))
+  mutate(across(everything(), ~ replace_na(., 0))) %>% 
+  mutate(re = richness/log(effort)) %>% 
+  mutate(re2 = richness/effort) 
+
+
 ```
 
 # Variables
@@ -210,6 +214,89 @@ print(plot_dynamics)
 print(plot_composition)
 print(plot_configuration)
 ```
+## Association between richness/effort and variables
+```{r, echo = FALSE, message=FALSE}
+# Create a new table with NA values replaced by 0 in the specified predictor columns
+cdata1 <- cdata %>%
+  mutate(across(all_of(c(structure, dynamics, composition, configuration)), ~ replace_na(., 0)))
+
+# Reshape the data to long format with only 'value' and 'variable'
+cdata_long <- cdata1 %>%
+  select(re2, all_of(c(structure, dynamics, composition, configuration))) %>%
+  pivot_longer(
+    cols = c(structure, dynamics, composition, configuration),
+    names_to = "variable",
+    values_to = "value"
+  )
+
+# Create faceted plot for the 'structure' group
+plot_structure <- ggplot(cdata_long %>% filter(variable %in% structure), aes(x = value, y = re2)) + 
+  geom_point(alpha = 0.7, color = "black") + 
+  geom_smooth(method = "loess", color = "blue", fill = "blue", alpha = 0.1) +
+  facet_wrap(~ variable, scales = "free_x", ncol = 3) + # Adjust the number of columns as needed
+  labs(x = "Value", y = "re") +
+  theme_classic() + 
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 14),
+    strip.text = element_text(size = 12, face = "bold"),
+    plot.title = element_text(size = 16, face = "bold")
+  ) +
+  ggtitle("re vs. Structure Predictors")
+
+# Create faceted plot for the 'dynamics' group
+plot_dynamics <- ggplot(cdata_long %>% filter(variable %in% dynamics), aes(x = value, y = re2)) + 
+  geom_point(alpha = 0.7, color = "black") + 
+  geom_smooth(method = "loess", color = "blue", fill = "blue", alpha = 0.1) +
+  facet_wrap(~ variable, scales = "free_x", ncol = 4) + # Adjust the number of columns as needed
+  labs(x = "Value", y = "re") +
+  theme_classic() + 
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 14),
+    strip.text = element_text(size = 12, face = "bold"),
+    plot.title = element_text(size = 16, face = "bold")
+  ) +
+  ggtitle("re vs. Dynamics Predictors")
+
+# Create faceted plot for the 'composition' group
+plot_composition <- ggplot(cdata_long %>% filter(variable %in% composition), aes(x = value, y = re2)) + 
+  geom_point(alpha = 0.7, color = "black") + 
+  geom_smooth(method = "loess", color = "blue", fill = "blue", alpha = 0.1) +
+  facet_wrap(~ variable, scales = "free_x", ncol = 2) + # Adjust the number of columns as needed
+  labs(x = "Value", y = "re") +
+  theme_classic() + 
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 14),
+    strip.text = element_text(size = 12, face = "bold"),
+    plot.title = element_text(size = 16, face = "bold")
+  ) +
+  ggtitle("re vs. Composition Predictors")
+
+# Create faceted plot for the 'configuration' group with limited y-axis
+plot_configuration <- ggplot(cdata_long %>% filter(variable %in% configuration), aes(x = value, y = re2)) + 
+  geom_point(alpha = 0.7, color = "black") + 
+  geom_smooth(method = "loess", color = "blue", fill = "blue", alpha = 0.1) +
+  facet_wrap(~ variable, scales = "free_x", ncol = 4) + # Adjust the number of columns as needed
+  labs(x = "Value", y = "re") +
+  theme_classic() + 
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 14),
+    strip.text = element_text(size = 12, face = "bold"),
+    plot.title = element_text(size = 16, face = "bold")
+  ) +
+  ggtitle("re vs. Configuration Predictors") +
+  coord_cartesian(ylim = c(0, max(cdata$re, na.rm = TRUE))) # Limiting the y-axis
+
+# Print the plots
+print(plot_structure)
+print(plot_dynamics)
+print(plot_composition)
+print(plot_configuration)
+```
+
 
 # Spatial
 Testing for spatial correlation
@@ -219,7 +306,7 @@ nb <- poly2nb(cdata)
 lw <- nb2listw(nb, style="W", zero.policy=TRUE)
 moran.mc(cdata$richness, lw, nsim = 999)
 ```
-We see that there is a small spatial correlation
+We see that there is no spatial correlation
 
 Lets check the spatial distribuition of richness
 
@@ -352,10 +439,10 @@ summary(stepwise_model)
 ```
 
 ```{r, echo=FALSE, warning=FALSE}
-selected <- glm(formula = richness ~ SUVI + SVI + SGVI + SEVIn + shdi + effort + 
-    pop + Gdistance + Bheight_me + Vheight_me + prop_veg + pland_tot + 
-    lpi_tot + ed_tot + nlsi_tot + np_tot, family = poisson(link = "log"), 
-    data = cdata)
+selected <- glm(formula = richness ~ SUVI + SVI + SGVI + shdi + effort + 
+    pop + Wdistance + Gdistance + Bvol + Bheight_me + Vvol + 
+    prop_veg + pland_tot + lpi_tot + ed_tot + contig_mn_ + nlsi_tot + 
+    np_tot + area_mn_tot, family = poisson(link = "log"), data = cdata)
 summary(selected)
 
 # Ajuste o modelo nulo
@@ -386,11 +473,22 @@ sh_sp_model <- glm(richness ~ SVI + effort + SEVIn, data = cdata, family = poiss
 
 summary(sh_sp_model)
 
-
 # Get the summary of the model
 sh_sp_model_summary <- summary(sh_sp_model)
 sh_sp_coefficients <- sh_sp_model_summary$coefficients[, "Estimate"]
 sh_sp_standard_errors <- sh_sp_model_summary$coefficients[, "Std. Error"]
+
+# Get the deviance of the fitted model
+deviance_model <- sh_sp_model$deviance
+
+# Get the deviance of the null model (a model with no predictors)
+deviance_null <- sh_sp_model$null.deviance
+
+# Calculate the deviance R²
+r_squared <- 1 - (deviance_model / deviance_null)
+
+# Display the R²
+r_squared
 
 # Combine them into a data frame
 sh_sp_effects_df <- data.frame(
@@ -410,7 +508,7 @@ ggplot(sh_sp_effects_df[-1,], aes(x = EffectSize, y = Variable)) +
 # GAM
 ```{r, echo=FALSE, warning=FALSE}
 # Variáveis selecionadas pelo Lasso
-lasso_vars <- c("SEVIn", "shdi")
+lasso_vars <- c("SVI", "shdi", "effort", "Vheight_me", "nlsi_tot")
 
 # Criar fórmula para o modelo GAM
 lasso_formula <- as.formula(paste("richness ~", paste(lasso_vars, collapse = " + ")))
