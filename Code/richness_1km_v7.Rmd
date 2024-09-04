@@ -29,6 +29,7 @@ library(glmnet)
 library(vegan)
 library(pscl)
 library(gridExtra)
+library(viridis)
 
 custom_theme <- theme_minimal() +
                 theme(text = element_text(size = 12),
@@ -37,14 +38,14 @@ custom_theme <- theme_minimal() +
                       panel.grid.minor = element_blank())
 ```
 
-# Data 4km²
+# Data 1km²
 
-This is a $4km^2$ grid over the urban area of the city of São Paulo
+This is a $1km^2$ grid over the urban area of the city of São Paulo
 
 ```{r data, include=FALSE}
 # sum of species
 #shp <- st_read("Z:/Bianca/eBird/Data/1km_urb_f1km/richness_effort_v16_total_1km_urb_f1km_30min_10spp.shp")
-shp <- st_read("C:/Users/Bianca/Documents/USP/Projeto/eBird/Data/2km/richness_effort_v16_total_2km_urb_f2.5km_30min_10spp.shp")
+shp <- st_read("C:/Users/Bianca/Documents/USP/Projeto/eBird/Data/1km/richness_effort_v16_total_1km_urb_f1km_30min_10spp.shp")
 cdata <- shp
 
 # Rename columns
@@ -69,7 +70,9 @@ cdata <- cdata %>%
     area_mn_tot = area_mn_to)
 
 cdata <- cdata %>%
-  mutate(across(everything(), ~ replace_na(., 0)))
+  mutate(across(everything(), ~ replace_na(., 0))) %>% 
+  mutate(re = richness/effort) %>% 
+  mutate(relog = richness/log(effort))
 ```
 
 # Variables
@@ -92,7 +95,7 @@ cdata$centy <- st_coordinates(st_centroid(cdata))[, 2]
 
 ## Correlation among variables
 There is high correlations among variables
-```{r, echo = FALSE, message=FALSE, warning=FALSE}
+```{r, echo = FALSE}
 # Full set of variables
 all_vars <- c("richness", structure, dynamics, composition, configuration)
 
@@ -352,9 +355,9 @@ summary(stepwise_model)
 ```
 
 ```{r, echo=FALSE, warning=FALSE}
-selected <- glm(formula = richness ~ SUVI + SVI + SGVI + effort + pop + Wdistance + 
-    Bvol + Bheight_me + Vvol + Vheight_me + prop_veg + pland_tot + 
-    ed_tot + contig_mn_ + nlsi_tot + np_tot + area_mn_tot, family = poisson(link = "log"), 
+selected <- glm(formula = richness ~ SUVI + SVI + SGVI + SEVIn + shdi + effort + 
+    pop + Gdistance + Bheight_me + Vheight_me + prop_veg + pland_tot + 
+    lpi_tot + ed_tot + nlsi_tot + np_tot, family = poisson(link = "log"), 
     data = cdata)
 summary(selected)
 
@@ -410,7 +413,7 @@ ggplot(sh_sp_effects_df[-1,], aes(x = EffectSize, y = Variable)) +
 # GAM
 ```{r, echo=FALSE, warning=FALSE}
 # Variáveis selecionadas pelo Lasso
-lasso_vars <- c("nlsi_tot", "shdi", "effort")
+lasso_vars <- c("SEVIn", "shdi")
 
 # Criar fórmula para o modelo GAM
 lasso_formula <- as.formula(paste("richness ~", paste(lasso_vars, collapse = " + ")))
@@ -424,7 +427,7 @@ summary(gam_lasso)
 
 ```{r, echo=FALSE, warning=FALSE}
 # Variáveis selecionadas pelo Ridge
-ridge_vars <- c("SUVI", "SVI", "shdi", "prop_veg", "nlsi_tot", "effort")
+ridge_vars <- c("SUVI", "SVI", "SGVI", "SEVIn", "shdi", "prop_veg", "nlsi_tot")
 
 # Criar fórmula para o modelo GAM
 ridge_formula <- as.formula(paste("richness ~", paste(ridge_vars, collapse = " + ")))
@@ -434,6 +437,39 @@ gam_ridge <- gam(ridge_formula, data = cdata, family = poisson(link = "log"))
 
 # Resumo do modelo
 summary(gam_ridge)
+
+```
+
+```{r, echo=FALSE, warning=FALSE}
+# Variáveis selecionadas pelo Lasso
+sp_sh_gam <- c("s(SEVIn,SVI)")
+
+# Criar fórmula para o modelo GAM
+gam_formula <- as.formula(paste("relog ~", paste(sp_sh_gam, collapse = " + ")))
+
+# Ajustar o modelo GAM usando as variáveis selecionadas pelo Lasso
+gam_p <- gam(gam_formula, data = cdata, family = poisson(link = "log"))
+
+# Resumo do modelo
+summary(gam_p)
+
+# Plotar
+plot(gam_p,all.terms = TRUE)
+vis.gam(gam_p, theta = 150, n.grid = 50, lwd = 0.4)
+
+```
+```{r, echo=FALSE, warning=FALSE}
+sim_data <- expand.grid(SEVIn = seq(-1, 1, length.out = 100),
+                        SVI = seq(0, 1, length.out = 200))
+
+# Use predict() to generate predictions
+sim_data <- sim_data %>% 
+  mutate(selog = predict(gam_p, newdata = sim_data))
+
+# Plot the results
+ggplot(data = sim_data) +
+  geom_point(aes(x = SVI, y = SEVIn, color = selog)) +
+  scale_color_viridis_c()
 
 ```
 
@@ -477,19 +513,23 @@ ggplot(importance_df, aes(x = reorder(Variable, Importance), y = Importance)) +
 
 ### Partial dependence plot
 ```{r, echo=FALSE, warning=FALSE}
-# Partial Dependence Plot for prop_veg
-pdp_prop_veg <- partial(rf_model, pred.var = "prop_veg", plot = TRUE, rug = TRUE, train = data_rf)
-print(pdp_prop_veg)
+# Partial Dependence Plot
+pdp_lpi_tot <- partial(rf_model, pred.var = "lpi_tot", plot = TRUE, rug = TRUE, train = data_rf)
+print(pdp_lpi_tot)
 
-# Partial Dependence Plot for Vheight_me
-pdp_Vheight_me <- partial(rf_model, pred.var = "Vheight_me", plot = TRUE, rug = TRUE, train = data_rf)
-print(pdp_Vheight_me)
+pdp_pop <- partial(rf_model, pred.var = "pop", plot = TRUE, rug = TRUE, train = data_rf)
+print(pdp_pop)
 
-# Partial Dependence Plot for nlsi_tot
-pdp_nlsi_tot <- partial(rf_model, pred.var = "nlsi_tot", plot = TRUE, rug = TRUE, train = data_rf)
-print(pdp_nlsi_tot)
+pdp_sevin <- partial(rf_model, pred.var = "SEVIn", plot = TRUE, rug = TRUE, train = data_rf)
+print(pdp_sevin)
 
-# Partial Dependence Plot for Vvol
-pdp_Vvol <- partial(rf_model, pred.var = "Vvol", plot = TRUE, rug = TRUE, train = data_rf)
-print(pdp_Vvol)
+pdp_bvol <- partial(rf_model, pred.var = "Bvol", plot = TRUE, rug = TRUE, train = data_rf)
+print(pdp_bvol)
+
+pdp_sgvi <- partial(rf_model, pred.var = "SGVI", plot = TRUE, rug = TRUE, train = data_rf)
+print(pdp_sgvi)
+
+pdp_area_mn_tot <- partial(rf_model, pred.var = "area_mn_tot", plot = TRUE, rug = TRUE, train = data_rf)
+print(pdp_area_mn_tot)
+
 ```
