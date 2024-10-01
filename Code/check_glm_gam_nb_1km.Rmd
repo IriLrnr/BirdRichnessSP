@@ -1,0 +1,534 @@
+---
+title: "GAM validation - Bird richness in São Paulo"
+author: "Bianca Neves, Irina Lerner, Douglas Cirino"
+date: "2024-09-22"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    theme: paper
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(ggplot2)       # For data visualization
+library(dplyr)         # For data manipulation
+library(PerformanceAnalytics) # For correlation matrix
+library(tidyr)         # For data tidying
+library(sf)            # For handling spatial data
+library(sp)            # For handling spatial data
+library(spdep)         # For spatial dependence analysis
+library(ggeffects)    # For extracting and plotting model effects
+library(mgcv)          # For fitting GAMs
+library(viridis)       # For color scales
+library(patchwork)    # combine plots
+library(car)
+library(lme4)
+library(MASS)          #nb glm
+library(DHARMa)
+
+custom_theme <- theme_minimal() +
+  theme(text = element_text(size = 12),
+        plot.title = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+```
+
+# Data 1km²
+This is a $1km^2$ grid over the urban area of the city of São Paulo
+```{r data, include=FALSE, warning=FALSE}
+shp <- st_read("Z:/Bianca/eBird/Data/1km_urb_f1km/richness_effort_v20_total_1km_urb_f1km_30min_10spp_sem_exot_equiv_groups.shp")
+#shp <- st_read("C:/Users/Bianca/Documents/USP/Projeto/eBird/Data/1km/richness_effort_v16_total_1km_urb_f1km_30min_10spp.shp")
+cdata <- shp
+
+
+## 2. Rename columns
+cdata <- cdata %>% 
+  rename(
+    richness = richness_s,
+    effort = effort_s,
+    Bheight_m = Bhght_m,
+    Bheight_s = Bhght_s,
+    Vheight_m = Vhght_m,
+    Vheight_s = Vhght_s,
+    Wdistance = Wdistnc,
+    contig_f = contg_f,
+    contig_h = contg_h,
+    pland_f = plant_f,
+    pland_h = pland_h,
+    area_mn_f = ar_mn_f,
+    area_mn_h = ar_mn_h,
+    prop_veg = prop_vg,
+    prop_for = prp_frs,
+    prop_wet = prp_wtl,
+    prop_grc = prp_grc,
+    prop_hrb = prp_hrb,
+    landscape_ = lndscp_,
+    contig_m_tot = cntg_m_,
+    pland_tot = plnd_tt,
+    nlsi_tot = nlsi_tt,
+    area_m_tot = ar_mn_t,
+    Gdistance = Gdistnc,
+    geometry = geometry
+  )
+
+cdata <- cdata %>%
+  mutate(across(everything(), ~ replace_na(., 0))) %>% 
+  arrange(id)
+
+cdata$centx <- st_coordinates(st_centroid(cdata))[, 1]
+cdata$centy <- st_coordinates(st_centroid(cdata))[, 2]
+
+```
+
+## Spatial correlation
+```{r spatial, echo=FALSE, warning=FALSE}
+# 1. Testing for spatial correlation
+coords <- st_centroid(cdata)
+nb <- poly2nb(cdata)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.mc(cdata$richness, lw, nsim = 999)
+# We see that there is a small spatial correlation
+
+# 2. Check the spatial distribuition of richness
+(ggplot(data = cdata) +
+  geom_sf(aes(fill = richness), color = NA) +
+  scale_fill_viridis_c(direction = -1) +
+  custom_theme)
+```
+
+While the Moran's I value of 0.12436 may not seem exceptionally high at first glance, it is considered significant in spatial autocorrelation studies, indicating a clear and notable pattern of clustering in bird richness. 
+
+
+#Variables
+## Correlation between variables
+```{r cor, echo=FALSE, warning=FALSE}
+## 1. Predictors
+predictors <- c("effort", "SVI", "SEVIo", "SUVI", "SGVI", "prop_arb")
+
+## 2. Correlation of variables
+cor_mat_structure <- as.data.frame(cdata)[, c("richness", predictors)]
+suppressWarnings(chart.Correlation(cor_mat_structure, histogram = TRUE, pch = 16, method = "pearson"))
+```
+
+## Multicollinearity in the predictors
+To check for multicollinearity in the predictors used in the GAM, I calculated the Variance Inflation Factor (VIF) using a linear model (lm). Although the GAM is a more flexible model, the VIF cannot be directly applied to GAMs. Instead, I fit a linear regression model with the same predictors (SEVIo, SGVI, and effort) as in the GAM. The VIF was then calculated from this linear model to assess the degree of multicollinearity between the variables.
+```{r vif, echo=FALSE, warning=FALSE}
+vif_model <- lm(richness ~ SEVIo + SGVI + effort, data = cdata)
+vif(vif_model)
+```
+The VIF results confirm that the predictor variables do not exhibit problematic multicollinearity, ensuring the robustness of the model estimates.
+
+## Association between richness and variables
+```{r rich, echo=FALSE, warning=FALSE, message=FALSE}
+## Association between richness and variables
+# Reshape the data to long format with only 'value' and 'variable'
+cdata_long <- cdata[, c("richness", "effort", "SVI", "SEVIo", "SUVI", "SGVI", "prop_arb")]
+cdata_long <- cdata_long %>% 
+  pivot_longer(
+    cols = c("effort", "SVI", "SEVIo", "SUVI", "SGVI", "prop_arb"),
+    names_to = "variable",
+    values_to = "value"
+  )
+
+
+# Create a faceted plot for the specified predictors
+(plot_structure <- ggplot(cdata_long, aes(x = value, y = richness)) + 
+    geom_point(alpha = 0.7, color = "black") + 
+    geom_smooth(method = "loess", color = "blue", fill = "blue", alpha = 0.1) +
+    facet_wrap(~ variable, scales = "free_x", ncol = 2, nrow = 3) +  # Adjusting to 3 rows and 2 columns
+    labs(x = "Value", y = "Richness") +
+    theme_classic() + 
+    theme(
+      axis.title = element_text(size = 14),  
+      axis.text = element_text(size = 14),
+      strip.text = element_text(size = 12, face = "bold"),
+      plot.title = element_text(size = 16, face = "bold")
+    ) +
+    ggtitle("Richness  vs. Predictors"))
+
+```
+
+# Generalized Linear Models
+## Null model
+### GLM 0: Null model
+```{r, echo=FALSE, warning=FALSE}
+glm_null <- glmer.nb(richness ~ 1 + (1 | effort), 
+                     data = cdata)
+
+summary(glm_null)
+
+summary_glm_null <- summary(glm_null)
+
+aic_glm_null <- AIC(glm_null)
+print(aic_glm_null)
+```
+
+## GLM model
+### GLM: rich ~ SEVIo + SGVI
+```{r, echo=FALSE, warning=FALSE}
+glm_SEVIo_SGVI <- glmer.nb(richness ~ SEVIo + SGVI + (1 | effort), data = cdata)
+
+summary(glm_SEVIo_SGVI)
+
+summary_glm_SEVIo_SGVI <- summary(glm_SEVIo_SGVI)
+
+aic_glm_SEVIo_SGVI <- AIC(glm_SEVIo_SGVI)
+print(aic_glm_SEVIo_SGVI)
+```
+```{r, echo=FALSE, warning=FALSE}
+glm_SEVIo_SGVI_q <- glmer.nb(richness ~ I(SEVIo^2) + SGVI + (1 | effort), data = cdata)
+
+summary(glm_SEVIo_SGVI_q)
+
+summary_glm_SEVIo_SGVI_q <- summary(glm_SEVIo_SGVI_q)
+
+aic_glm_SEVIo_SGVI_q <- AIC(glm_SEVIo_SGVI_q)
+print(aic_glm_SEVIo_SGVI_q)
+```
+
+
+### GLM: rich ~ SEVIo * SGVI
+```{r glmint, echo=FALSE, warning=FALSE}
+glm_SEVIo_SGVI_int <- glmer.nb(richness ~ SEVIo * SGVI + (1 | effort), data = cdata)
+
+summary(glm_SEVIo_SGVI_int)
+
+summary_glm_SEVIo_SGVI_int <- summary(glm_SEVIo_SGVI_int)
+
+aic_glm_SEVIo_SGVI_int <- AIC(glm_SEVIo_SGVI_int)
+print(aic_glm_SEVIo_SGVI_int)
+```
+
+# Generalized Additive Models
+## Null model
+### GAM 0: Null model
+```{r gam0, echo=FALSE, warning=FALSE}
+#### 0. GAM: Null model ####
+gam_null <- gam(richness ~ 1 + s(effort, bs = "re"), 
+                data = cdata, 
+                family = nb(link = "log"))
+summary(gam_null)
+
+## 2. AIC
+aic_gam_null <- AIC(gam_null)
+```
+
+## GAM model
+### GAM: rich ~ SEVIo + SGVI
+```{r gam3, echo=FALSE, warning=FALSE}
+#### 3. GAM: rich ~ SEVIo + SGVI ####
+## 1. Model
+gam_SEVIo_SGVI <- gam(richness ~ s(SEVIo) + s(SGVI) + s(effort, bs = "re"), 
+                      data = cdata, 
+                      family = nb(link = "log"))
+summary(gam_SEVIo_SGVI)
+
+## 2. AIC
+aic_gam_SEVIo_SGVI <- AIC(gam_SEVIo_SGVI)
+```
+
+```{r gam3p, echo=FALSE, warning=FALSE}
+## 4. Heatmap
+# 4.1 Create a grid of values for SEVIo and SGVI
+sim_data3 <- expand.grid(SEVIo = seq(0, 1, length.out = 200),
+                         SGVI = seq(0, 1, length.out = 200))
+
+# Add a fixed value for `effort` to the grid
+fixed_effort <- median(cdata$effort)
+
+# 4.2: Use predict() to generate predictions from the model gam_SEVIo_SGVI
+sim_data3 <- sim_data3 %>% 
+  mutate(predicted_richness = predict(gam_SEVIo_SGVI, newdata = transform(sim_data3, effort = fixed_effort), type = "response"))
+
+# 4.3: Plot the results using geom_tile() for a heatmap
+plot_heatmap_3 <- ggplot(data = sim_data3, aes(x = SEVIo, y = SGVI, fill = predicted_richness)) +
+  geom_tile() +
+  scale_fill_viridis_c(name = "Predicted richness") +
+  labs(x = "SEVIo", y = "SGVI") +
+  theme_classic() + 
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  ggtitle("Heatmap of additive model")
+
+plot_heatmap_3
+```
+
+### GAM: rich ~ SEVIo * SGVI
+```{r gam8, echo=FALSE, warning=FALSE}
+#### 3. GAM: rich ~ SEVIo * SGVI ####
+## 1. Model
+gam_SEVIo_SGVI_int <- gam(richness ~ s(SEVIo,SGVI) + s(effort, bs = "re"), 
+                      data = cdata, 
+                      family = nb(link = "log"))
+summary(gam_SEVIo_SGVI_int)
+
+## 2. AIC
+aic_gam_SEVIo_SGVI_int <- AIC(gam_SEVIo_SGVI_int)
+```
+
+```{r gam8p, echo=FALSE, warning=FALSE}
+## 4. Heatmap
+# 4.1 Create a grid of values for SEVIo and SGVI
+sim_data8 <- expand.grid(SEVIo = seq(0, 1, length.out = 200),
+                         SGVI = seq(0, 1, length.out = 200))
+
+# Add a fixed value for `effort` to the grid
+fixed_effort <- median(cdata$effort)
+
+# 4.2: Use predict() to generate predictions from the model gam_SEVIo_SGVI
+sim_data8 <- sim_data8 %>% 
+  mutate(predicted_richness = predict(gam_SEVIo_SGVI_int, newdata = transform(sim_data8, effort = fixed_effort), type = "response"))
+
+# 4.3: Plot the results using geom_tile() for a heatmap
+plot_heatmap_8 <- ggplot(data = sim_data8, aes(x = SEVIo, y = SGVI, fill = predicted_richness)) +
+  geom_tile() +
+  scale_fill_viridis_c(name = "Predicted richness") +
+  labs(x = "SEVIo", y = "SGVI") +
+  theme_classic() + 
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  ggtitle("Heatmap of interaction model")
+
+plot_heatmap_8
+```
+
+# Comparing models
+## AIC selection
+```{r compar, echo=FALSE, warning=FALSE}
+# Store model names and AIC values in a data frame
+aic_values <- data.frame(
+  Model = c("GLM Model (SEVIo + SGVI)",
+            "GLM Model (I(SEVIo^2) + SGVI)",
+            "GLM Model (SEVIo * SGVI)", 
+            "GAM Model (SEVIo + SGVI)", 
+            "GAM Model (SEVIo * SGVI)"),
+  AIC = c(aic_glm_SEVIo_SGVI,
+          aic_glm_SEVIo_SGVI_q,
+          aic_glm_SEVIo_SGVI_int,
+          aic_gam_SEVIo_SGVI, 
+          aic_gam_SEVIo_SGVI_int)
+)
+
+# Calculate delta AIC
+aic_min <- min(aic_values$AIC)
+aic_values$Delta_AIC <- aic_values$AIC - aic_min
+
+# Sort by AIC
+aic_values_sorted <- aic_values[order(aic_values$AIC), ]
+
+# Print the sorted AIC values along with Delta AIC
+print(aic_values_sorted)
+```
+
+# GLM check
+Non-normality of the residuals and the heteroscedasticity pattern (non-constant variation of residuals).
+
+```{r, echo=FALSE, warning=FALSE}
+# Função para criar o gráfico de resíduos com linha reta em y = 0
+create_residual_plot <- function(model, title) {
+  residuals_data <- data.frame(
+    Fitted = fitted.values(model),
+    Residuals = residuals(model)
+  )
+  
+  ggplot(residuals_data, aes(x = Fitted, y = Residuals)) +
+    geom_point(alpha = 0.7, color = "black") +
+    geom_hline(yintercept = 0, color = "red") +  # Linha reta em y = 0
+    labs(x = "Fitted Values", y = "Residuals", title = title) +
+    theme_classic() +  
+    theme(
+      axis.title = element_text(size = 14),  
+      axis.text = element_text(size = 12), 
+      plot.title = element_text(size = 16, face = "bold"), 
+      panel.border = element_blank(),  
+      axis.line = element_line(color = "black") 
+    )
+}
+
+# Criando os 4 gráficos de resíduos com títulos ajustados
+p1 <- create_residual_plot(glm_SEVIo_SGVI, "GLM SEVIo + SGVI")
+p2 <- create_residual_plot(glm_SEVIo_SGVI_int, "GLM SEVIo * SGVI")
+
+# Organizando os gráficos em um layout 2x2 usando patchwork
+layout <- (p1 | p2)
+layout
+
+# Função para criar o Q-Q plot com linha de qqline do R base replicada
+create_qq_plot <- function(model, title) {
+  residuals_data <- data.frame(
+    Residuals = sort(residuals(model)),
+    Theoretical = sort(qnorm(ppoints(length(residuals(model)))))
+  )
+  
+  # Calcula os quantis para a linha de qqline
+  slope <- diff(quantile(residuals_data$Residuals, c(0.25, 0.75))) / 
+           diff(quantile(residuals_data$Theoretical, c(0.25, 0.75)))
+  intercept <- quantile(residuals_data$Residuals, 0.25) - slope * quantile(residuals_data$Theoretical, 0.25)
+  
+  ggplot(residuals_data, aes(sample = Residuals)) +
+    geom_point(aes(x = Theoretical, y = Residuals), color = "black", alpha = 0.7) +
+    geom_abline(intercept = intercept, slope = slope, color = "red") +  # Linha ajustada ao estilo qqline
+    labs(x = "Theoretical Quantiles", y = "Sample Quantiles", title = title) +
+    theme_classic() +
+    theme(
+      axis.title = element_text(size = 14), 
+      axis.text = element_text(size = 12), 
+      plot.title = element_text(size = 16, face = "bold"),  
+      panel.border = element_blank(),  
+      axis.line = element_line(color = "black")  
+    )
+}
+
+# Criando os 4 Q-Q plots com títulos ajustados e linha no estilo do R base
+qq1 <- create_qq_plot(glm_SEVIo_SGVI, "Q-Q Plot: GLM SEVIo + SGVI")
+qq2 <- create_qq_plot(glm_SEVIo_SGVI_int, "Q-Q Plot: GLM SEVIo * SGVI")
+
+
+# Organizando os Q-Q plots em um layout 2x2 usando patchwork
+layout_qq <- (qq1 | qq2) 
+layout_qq
+```
+
+```{r, echo=FALSE, warning=FALSE}
+# Função para criar o histograma dos resíduos
+create_residual_histogram <- function(model, title) {
+  residuals_data <- data.frame(Residuals = residuals(model))
+  
+  ggplot(residuals_data, aes(x = Residuals)) +
+    geom_histogram(color = "black", fill = "gray", alpha = 0.6, bins = 30) +  # Histograma com 30 bins
+    labs(x = "Residuals", y = "Frequency", title = title) +
+    theme_classic() +  
+    theme(
+      axis.title = element_text(size = 14),  
+      axis.text = element_text(size = 12), 
+      plot.title = element_text(size = 16, face = "bold"), 
+      panel.border = element_blank(),  
+      axis.line = element_line(color = "black") 
+    )
+}
+
+
+# Criando os 4 histogramas dos resíduos
+h1 <- create_residual_histogram(glm_SEVIo_SGVI, "Histogram: GLM SEVIo + SGVI")
+h2 <- create_residual_histogram(glm_SEVIo_SGVI_int, "Histogram: GLM SEVIo * SGVI")
+
+# Organizando os gráficos em um layout 2x2 usando patchwork
+layout_histograms <- (h1 | h2)
+layout_histograms
+```
+
+```{r, echo=FALSE, warning=FALSE}
+# Teste de normalidade de Shapiro-Wilk
+shapiro_test_SEVIo_SGVI <- shapiro.test(residuals(glm_SEVIo_SGVI))
+shapiro_test_SEVIo_SGVI_int <- shapiro.test(residuals(glm_SEVIo_SGVI_int))
+
+# Exibir resultados do teste
+print(shapiro_test_SEVIo_SGVI)
+print(shapiro_test_SEVIo_SGVI_int)
+```
+
+```{r, echo=FALSE, warning=FALSE}
+# Simular resíduos
+sim_resid_SEVIo_SGVI <- simulateResiduals(fittedModel = glm_SEVIo_SGVI)
+sim_resid_SEVIo_SGVI_int <- simulateResiduals(fittedModel = glm_SEVIo_SGVI_int)
+
+# Plotar resíduos simulados para diagnóstico visual
+plot(sim_resid_SEVIo_SGVI)
+plot(sim_resid_SEVIo_SGVI_int)
+```
+
+# GAM check
+## GAM: rich ~ SEVIo + SGVI
+The smoothed term for SEVIo has an edf of 3.3087, indicating a moderate nonlinear relationship between SEVIo and species richness. 
+The smoothed term for SGVI has an edf of 1.0012, suggesting that its effect is practically linear. 
+The value R-sq.(adj) = -0.166 remains negative, which suggests that the complexity of the model may not yet be capturing all the variation in the data.
+s(SEVIo): The value of k' = 9 and edf = 3.309 suggest that the choice of k is adequate, with a k-index of 0.98, which is as expected. 
+s(SGVI): The k' = 9 and edf = 1.001 also indicate an appropriate fit, but the k-index of 0.90 and p-value of 0.095 suggest that there may be a slight underestimation of the complexity for SGVI. This could be adjusted with a higher value of k, but since the edf is close to 1, linearity must be maintained.
+```{r gam3check, echo=FALSE, warning=FALSE}
+#### 3. GAM: rich ~ SEVIo + SGVI ####
+## 1. Model
+gam_SEVIo_SGVI <- gam(richness ~ s(SEVIo) + s(SGVI) + s(effort, bs = "re"), 
+                      data = cdata, 
+                      family = nb(link = "log"))
+summary(gam_SEVIo_SGVI)
+
+## 2. AIC
+aic_gam_SEVIo_SGVI <- AIC(gam_SEVIo_SGVI)
+
+## 3. Plot
+plot(gam_SEVIo_SGVI, pages = 1, residuals = TRUE, rug = TRUE)
+plot_vis_gam_3 <- vis.gam(gam_SEVIo_SGVI, theta = 150, n.grid = 50, lwd = 0.4)
+
+## 4. Check
+k.check(gam_SEVIo_SGVI)
+gam.check(gam_SEVIo_SGVI)
+```
+
+## GAM: rich ~ SEVIo * SGVI
+This model indicates that effort and the combination of SEVIo and SGVI are significant predictors of species richness. 
+The bivariate smoothed term of SEVIo and SGVI is non-linear and complex, while effort has a significant linear effect.
+The value of R-sq.(adj) = -0.173 indicates that the adjusted model, compared to a simple linear model, may not be explaining as much variation as expected. The use of smoothing may be contributing to this result, or there may be important variables missing.
+For s(SEVIo, SGVI), the value of k' = 29 and edf = 5.733 indicate that the choice of k is appropriate, as the k-index is 1.04, which is close to the expected value (k-index close to 1) .
+
+```{r gam8check, echo=FALSE, warning=FALSE}
+#### 3. GAM: rich ~ SEVIo * SGVI ####
+## 1. Model
+gam_SEVIo_SGVI_int <- gam(richness ~ s(SEVIo,SGVI) + s(effort, bs = "re"), 
+                      data = cdata, 
+                      family = nb(link = "log"))
+summary(gam_SEVIo_SGVI_int)
+
+## 2. AIC
+aic_gam_SEVIo_SGVI_int <- AIC(gam_SEVIo_SGVI_int)
+
+## 3. Plot
+plot(gam_SEVIo_SGVI_int, pages = 1, residuals = TRUE, rug = TRUE)
+plot_vis_gam_8 <- vis.gam(gam_SEVIo_SGVI_int, theta = 150, n.grid = 50, lwd = 0.4)
+
+## 4. Check
+k.check(gam_SEVIo_SGVI_int)
+gam.check(gam_SEVIo_SGVI_int)
+
+
+```
+
+## GAM ANOVA
+The data do not show a significant difference in the predictive ability of the two models.
+```{r gamanova, echo=FALSE, warning=FALSE}
+anova(gam_SEVIo_SGVI, gam_SEVIo_SGVI_int, test = "F")
+```
+
+# Visualize
+```{r, echo=FALSE, warning=FALSE}
+ggplot(cdata, aes(x = SGVI, y = richness, color = SEVIo)) +
+  geom_point(alpha = 0.7, size=2) + 
+  geom_smooth(method = "gam", formula = y ~ s(x), color = "black", fill = "black", alpha = 0.05, size = 0.5) +
+  labs(x = "Sparing green", y = "Richness", title = "Richness with sparing green") +
+  theme_classic() +  
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 12), 
+    plot.title = element_text(size = 16, face = "bold"), 
+    panel.border = element_blank(),  
+    axis.line = element_line(color = "black") 
+  )
+```

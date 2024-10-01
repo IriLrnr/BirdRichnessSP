@@ -1,7 +1,7 @@
 ---
 title: "Exploring eBird data from 2015 to 2023"
 author: "Bianca Neves"
-date: "02/09/24"
+date: "24/09/24"
 output:
   html_document:
     toc: yes
@@ -16,36 +16,136 @@ knitr::opts_chunk$set(echo = TRUE)
 
 library(ggplot2)
 library(dplyr)
-library(tidyr) # for organized code
-library(sf, sp) # for reading shp and ploting
+library(tidyr)
+library(sf, sp)
+library(patchwork)
+library(mgcv)
 
 ```
 
-# Data $1km^2$, $4km^2 and $9km^2$,
+# Data
 The data is from eBird for the period from 2015 to 2023, covering the urban area of the city of São Paulo. Only cells with 30 minutes or more of observation and 10 or more bird species were selected.
 
 ```{r data, include=FALSE}
-# sum of species
-#shp <- st_read("Z:/Bianca/eBird/Data/1km_urb_f1km/richness_effort_v13_total_1km_urb_f1km_30min_10spp.shp")
-shp_1 <- st_read("C:/Users/Bianca/Documents/USP/Projeto/eBird/Data/1km/richness_effort_v13_total_1km_urb_f1km_30min_10spp.shp")
+# 1km
+shp_1 <- st_read("Z:/Bianca/eBird/Data/1km_urb_f1km/richness_effort_v20_total_1km_urb_f1km_30min_10spp_sem_exot_equiv_groups.shp")
 data_1km <- shp_1
 data_1km$scale <- "1 km²" 
+data_1km <- data_1km %>% 
+  rename(
+    richness = richness_s,
+    effort = effort_s,
+    Bheight_m = Bhght_m,
+    Bheight_s = Bhght_s,
+    Vheight_m = Vhght_m,
+    Vheight_s = Vhght_s,
+    Wdistance = Wdistnc,
+    contig_f = contg_f,
+    contig_h = contg_h,
+    pland_f = plant_f,
+    pland_h = pland_h,
+    area_mn_f = ar_mn_f,
+    area_mn_h = ar_mn_h,
+    prop_veg = prop_vg,
+    prop_for = prp_frs,
+    prop_wet = prp_wtl,
+    prop_grc = prp_grc,
+    prop_hrb = prp_hrb,
+    landscape_ = lndscp_,
+    contig_m_tot = cntg_m_,
+    pland_tot = plnd_tt,
+    nlsi_tot = nlsi_tt,
+    area_m_tot = ar_mn_t,
+    Gdistance = Gdistnc,
+    geometry = geometry
+  )
 
-#shp <- st_read("Z:/Bianca/eBird/Data/2km_urb_f2.5km/richness_effort_v13_total_2km_urb_f2.5km_30min_10spp.shp")
-shp_4 <- st_read("C:/Users/Bianca/Documents/USP/Projeto/eBird/Data/2km/richness_effort_v13_total_2km_urb_f2.5km_30min_10spp.shp")
+data_1km <- data_1km %>%
+  mutate(across(everything(), ~ replace_na(., 0))) %>% 
+  arrange(id)
+
+#4km
+shp_4 <- st_read("Z:/Bianca/eBird/Data/2km_urb_f2.5km/richness_effort_v20_total_2km_urb_f2.5km_30min_10spp_sem_exot_equiv_groups.shp")
 data_4km <- shp_4
 data_4km$scale <- "4 km²"
 
-#shp_9 <- st_read("Z:/Bianca/eBird/Data/3km_urb_fkm/richness_effort_v13_total_3km_urb_f5km_30min_10spp.shp")
-shp_9 <- st_read("C:/Users/Bianca/Documents/USP/Projeto/eBird/Data/3km/richness_effort_v13_total_3km_urb_f5km_30min_10spp.shp")
+data_4km <- data_4km %>% 
+  rename(
+    richness = richness_s,
+    effort = effort_s,
+    Bheight_m = Bhght_m,
+    Bheight_s = Bhght_s,
+    Vheight_m = Vhght_m,
+    Vheight_s = Vhght_s,
+    Wdistance = Wdistnc,
+    contig_f = contg_f,
+    contig_h = contg_h,
+    pland_f = plant_f,
+    pland_h = pland_h,
+    area_mn_f = ar_mn_f,
+    area_mn_h = ar_mn_h,
+    prop_veg = prop_vg,
+    prop_for = prp_frs,
+    prop_wet = prp__wt,
+    prop_grc = prp_grc,
+    prop_hrb = prp_hrb,
+    landscape_ = lndscp_,
+    contig_m_tot = cntg_m_,
+    pland_tot = plnd_tt,
+    nlsi_tot = nlsi_tt,
+    area_m_tot = ar_mn_t,
+    Gdistance = Gdistnc,
+    geometry = geometry
+  )
+
+data_4km <- data_4km %>%
+  mutate(across(everything(), ~ replace_na(., 0))) %>% 
+  arrange(id)
+
+# 9km
+shp_9 <- st_read("Z:/Bianca/eBird/Data/3km_urb_f5km/richness_effort_v20_total_3km_urb_f5km_30min_10spp_sem_exot_equiv_groups.shp")
 data_9km <- shp_9
 data_9km$scale <- "9 km²"
+
+data_9km <- data_9km %>% 
+  rename(
+    richness = richness_s,
+    effort = effort_s,
+    Bheight_m = Bhght_m,
+    Bheight_s = Bhght_s,
+    Vheight_m = Vhght_m,
+    Vheight_s = Vhght_s,
+    Wdistance = Wdistnc,
+    contig_f = contg_f,
+    contig_h = contg_h,
+    pland_f = plant_f,
+    pland_h = pland_h,
+    area_mn_f = ar_mn_f,
+    area_mn_h = ar_mn_h,
+    prop_veg = prop_vg,
+    prop_for = prp_frs,
+    prop_wet = prp__wt,
+    prop_grc = prp_grc,
+    prop_hrb = prp_hrb,
+    landscape_ = lndscp_,
+    contig_m_tot = cntg_m_,
+    pland_tot = plnd_tt,
+    nlsi_tot = nlsi_tt,
+    area_m_tot = ar_mn_t,
+    Gdistance = Gdistnc,
+    geometry = geometry
+  )
+
+data_9km <- data_9km %>%
+  mutate(across(everything(), ~ replace_na(., 0))) %>% 
+  arrange(id)
 
 # Combine datasets into one data frame
 combined_data <- bind_rows(data_1km, data_4km, data_9km)
 ```
 
-# Richness
+## Richness
+### Density
 ```{r, echo=FALSE}
 ggplot(combined_data, aes(x = richness, fill = scale)) +
   geom_density(alpha = 0.5) +
@@ -87,6 +187,28 @@ ggplot(combined_data, aes(x = scale, y = richness, fill = scale)) +
     plot.title = element_text(size = 16, face = "bold")
   )
 ```
+```{r, echo=FALSE}
+# Calcular médias e variâncias
+mean_1km <- mean(data_1km$richness)
+var_1km <- var(data_1km$richness)
+
+mean_4km <- mean(data_4km$richness)
+var_4km <- var(data_4km$richness)
+
+mean_9km <- mean(data_9km$richness)
+var_9km <- var(data_9km$richness)
+
+# Criar tabela
+table_richness <- data.frame(
+  Scale = c("1km²", "4km²", "9km²"),
+  Mean = c(mean_1km, mean_4km, mean_9km),
+  Variance = c(var_1km, var_4km, var_9km)
+)
+
+# Visualizar tabela
+print(table_richness)
+```
+
 # Time effort
 Sum of the total time in minutes of independent sampling (filtered by person and by group).
 ```{r, echo=FALSE}
@@ -115,6 +237,7 @@ ggplot(combined_data, aes(x = effort * 60, fill = scale)) +
     plot.title = element_text(size = 16, face = "bold")
   )
 ```
+
 ```{r, echo=FALSE}  
 # Boxplot for effort
 ggplot(combined_data, aes(x = scale, y = effort * 60, fill = scale)) +
@@ -130,9 +253,6 @@ ggplot(combined_data, aes(x = scale, y = effort * 60, fill = scale)) +
     plot.title = element_text(size = 16, face = "bold")
   )
 ```
-
-
-## Time effort for different scales
 
 ```{r, echo=FALSE}
 # Histogram with binwidth = 100 and y as proportion, colored by scale
@@ -176,4 +296,566 @@ ggplot(combined_data, aes(x = effort / 60, fill = scale)) +
   ) +
   ggtitle("Time effort by scale")
 
+```
+
+
+
+
+# Richness by effort
+```{r, echo=FALSE, warning=FALSE}
+# Create a function to generate the plot for each dataset
+plot_effort_richness <- function(data, title) {
+  ggplot(data, aes(x = effort, y = richness)) +
+    geom_point(alpha = 0.5) +  # Set transparency of points to 50%
+    geom_smooth(aes(color = "Linear Fit"), method = "lm", se = FALSE, linetype = "dashed") +  
+    geom_smooth(aes(color = "Logarithmic Fit"), method = "lm", formula = y ~ log(x), se = FALSE) +  
+    geom_smooth(aes(color = "GAM Fit"), method = "gam", formula = y ~ s(x), se = FALSE) + 
+    labs(title = title, x = "Effort", y = "Species Richness") +
+    scale_color_manual(values = c("Linear Fit" = "red", 
+                                    "Logarithmic Fit" = "blue", 
+                                    "GAM Fit" = "darkgreen")) +  
+    theme_classic() +  # Set classic theme
+    theme(
+      legend.position = "bottom",
+      axis.title = element_text(size = 14),
+      axis.text = element_text(size = 14),
+      plot.title = element_text(size = 16, face = "bold")
+    ) 
+}
+
+# Plot for data_1km
+plot_1km <- plot_effort_richness(data_1km, "Effort vs. Species Richness (1km)")
+
+# Plot for data_4km
+plot_4km <- plot_effort_richness(data_4km, "Effort vs. Species Richness (4km)")
+
+# Plot for data_9km
+plot_9km <- plot_effort_richness(data_9km, "Effort vs. Species Richness (9km)")
+
+# Display the plots
+plot_1km
+plot_4km
+plot_9km
+```
+
+
+# Sparing and sharing metrics
+
+## Sharing
+```{r, echo=FALSE}
+ggplot(combined_data, aes(x = SVI, fill = scale)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Sharing", y = "Density") +
+  ggtitle("Sharing by scale") +
+  theme_classic() +
+  theme(
+    legend.position = "bottom",
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+```
+
+## Sparing uneveness
+```{r, echo=FALSE}
+ggplot(combined_data, aes(x = SEVIo, fill = scale)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Sparing uneveness", y = "Density") +
+  ggtitle("Sparing uneveness by scale") +
+  theme_classic() +
+  theme(
+    legend.position = "bottom",
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+```
+
+## Sparing green
+```{r, echo=FALSE}
+ggplot(combined_data, aes(x = SGVI, fill = scale)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Sparing green", y = "Density") +
+  ggtitle("Sparing green by scale") +
+  theme_classic() +
+  theme(
+    legend.position = "bottom",
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+```
+
+## Sparing urban
+```{r, echo=FALSE}
+ggplot(combined_data, aes(x = SUVI, fill = scale)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Sparing urban", y = "Density") +
+  ggtitle("Sparing urban by scale") +
+  theme_classic() +
+  theme(
+    legend.position = "bottom",
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+```
+
+# Scales
+## Density
+```{r, echo=FALSE}
+# Gráficos individuais para 1km
+p1_1km <- ggplot(data_1km, aes(x = SVI)) +
+  geom_density(alpha = 0.5, fill = "#f7756a", color = "#f7756a") +
+  labs(x = "Sharing", y = "Density") +
+  ggtitle("Scale 1km²") + 
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+p2_1km <- ggplot(data_1km, aes(x = SEVIo)) +
+  geom_density(alpha = 0.5, fill = "#f7756a", color = "#f7756a") +
+  labs(x = "Sparing uneveness", y = "Density") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+p3_1km <- ggplot(data_1km, aes(x = SGVI)) +
+  geom_density(alpha = 0.5, fill = "#f7756a", color = "#f7756a") +
+  labs(x = "Sparing green", y = "Density") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+p4_1km <- ggplot(data_1km, aes(x = SUVI)) +
+  geom_density(alpha = 0.5, fill = "#f7756a", color = "#f7756a") +
+  labs(x = "Sparing urban", y = "Density") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+# Gráficos individuais para 4km
+p1_4km <- ggplot(data_4km, aes(x = SVI)) +
+  geom_density(alpha = 0.5, fill = "#60a576", color = "#60a576") +
+  labs(x = "Sharing", y = "Density") +
+  ggtitle("Scale 4km²") + 
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+p2_4km <- ggplot(data_4km, aes(x = SEVIo)) +
+  geom_density(alpha = 0.5, fill = "#60a576", color = "#60a576") +
+  labs(x = "Sparing uneveness", y = "Density") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+p3_4km <- ggplot(data_4km, aes(x = SGVI)) +
+  geom_density(alpha = 0.5, fill = "#60a576", color = "#60a576") +
+  labs(x = "Sparing green", y = "Density") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+p4_4km <- ggplot(data_4km, aes(x = SUVI)) +
+  geom_density(alpha = 0.5, fill = "#60a576", color = "#60a576") +
+  labs(x = "Sparing urban", y = "Density") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+# Gráficos individuais para 9km
+p1_9km <- ggplot(data_9km, aes(x = SVI)) +
+  geom_density(alpha = 0.5, fill = "#7b94d2", color = "#7b94d2") +
+  labs(x = "Sharing", y = "Density") +
+  ggtitle("Scale 9km²") + 
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+p2_9km <- ggplot(data_9km, aes(x = SEVIo)) +
+  geom_density(alpha = 0.5, fill = "#7b94d2", color = "#7b94d2") +
+  labs(x = "Sparing uneveness", y = "Density") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+p3_9km <- ggplot(data_9km, aes(x = SGVI)) +
+  geom_density(alpha = 0.5, fill = "#7b94d2", color = "#7b94d2") +
+  labs(x = "Sparing green", y = "Density") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+p4_9km <- ggplot(data_9km, aes(x = SUVI)) +
+  geom_density(alpha = 0.5, fill = "#7b94d2", color = "#7b94d2") +
+  labs(x = "Sparing urban", y = "Density") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+# Usar patchwork para combinar os gráficos
+(p1_1km | p1_4km | p1_9km) / 
+(p2_1km | p2_4km | p2_9km) / 
+(p3_1km | p3_4km | p3_9km) / 
+(p4_1km | p4_4km | p4_9km)
+```
+
+## Frequency
+```{r, echo=FALSE, warning=FALSE}
+# Gráficos individuais para 1km
+p1_1km <- ggplot(data_1km, aes(x = SVI)) +
+  geom_histogram(aes(y = ..count..), alpha = 0.5, fill = "#f7756a", color = "#f7756a", bins = 30) +
+  labs(x = "Sharing", y = "Frequency") +
+  ggtitle("Scale 1km²") + 
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+p2_1km <- ggplot(data_1km, aes(x = SEVIo)) +
+  geom_histogram(aes(y = ..count..), alpha = 0.5, fill = "#f7756a", color = "#f7756a", bins = 30) +
+  labs(x = "Sparing uneveness", y = "Frequency") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+p3_1km <- ggplot(data_1km, aes(x = SGVI)) +
+  geom_histogram(aes(y = ..count..), alpha = 0.5, fill = "#f7756a", color = "#f7756a", bins = 30) +
+  labs(x = "Sparing green", y = "Frequency") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+p4_1km <- ggplot(data_1km, aes(x = SUVI)) +
+  geom_histogram(aes(y = ..count..), alpha = 0.5, fill = "#f7756a", color = "#f7756a", bins = 30) +
+  labs(x = "Sparing urban", y = "Frequency") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+# Gráficos individuais para 4km
+p1_4km <- ggplot(data_4km, aes(x = SVI)) +
+  geom_histogram(aes(y = ..count..), alpha = 0.5, fill = "#60a576", color = "#60a576", bins = 30) +
+  labs(x = "Sharing", y = "Frequency") +
+  ggtitle("Scale 4km²") + 
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+p2_4km <- ggplot(data_4km, aes(x = SEVIo)) +
+  geom_histogram(aes(y = ..count..), alpha = 0.5, fill = "#60a576", color = "#60a576", bins = 30) +
+  labs(x = "Sparing uneveness", y = "Frequency") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+p3_4km <- ggplot(data_4km, aes(x = SGVI)) +
+  geom_histogram(aes(y = ..count..), alpha = 0.5, fill = "#60a576", color = "#60a576", bins = 30) +
+  labs(x = "Sparing green", y = "Frequency") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+p4_4km <- ggplot(data_4km, aes(x = SUVI)) +
+  geom_histogram(aes(y = ..count..), alpha = 0.5, fill = "#60a576", color = "#60a576", bins = 30) +
+  labs(x = "Sparing urban", y = "Frequency") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+# Gráficos individuais para 9km
+p1_9km <- ggplot(data_9km, aes(x = SVI)) +
+  geom_histogram(aes(y = ..count..), alpha = 0.5, fill = "#7b94d2", color = "#7b94d2", bins = 30) +
+  labs(x = "Sharing", y = "Frequency") +
+  ggtitle("Scale 9km²") + 
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+p2_9km <- ggplot(data_9km, aes(x = SEVIo)) +
+  geom_histogram(aes(y = ..count..), alpha = 0.5, fill = "#7b94d2", color = "#7b94d2", bins = 30) +
+  labs(x = "Sparing uneveness", y = "Frequency") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+p3_9km <- ggplot(data_9km, aes(x = SGVI)) +
+  geom_histogram(aes(y = ..count..), alpha = 0.5, fill = "#7b94d2", color = "#7b94d2", bins = 30) +
+  labs(x = "Sparing green", y = "Frequency") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+p4_9km <- ggplot(data_9km, aes(x = SUVI)) +
+  geom_histogram(aes(y = ..count..), alpha = 0.5, fill = "#7b94d2", color = "#7b94d2", bins = 30) +
+  labs(x = "Sparing urban", y = "Frequency") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  )
+
+# Usar patchwork para combinar os gráficos
+(p1_1km | p1_4km | p1_9km) / 
+(p2_1km | p2_4km | p2_9km) / 
+(p3_1km | p3_4km | p3_9km) / 
+(p4_1km | p4_4km | p4_9km)
+```
+
+## 1 km²
+```{r, echo=FALSE}
+# Histograma para SVI
+p1 <- ggplot(data_4km, aes(x = SVI, fill = scale)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) + 
+  labs(x = "Sharing", y = "Frequency") +
+  ggtitle("Sharing (4km²)") +  
+  theme_classic() +
+  theme(
+    legend.position = "none",  
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Histograma para SEVIo
+p2 <- ggplot(data_4km, aes(x = SEVIo, fill = scale)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) + 
+  labs(x = "Sparing uneveness", y = "Frequency") +
+  ggtitle("Sparing uneveness (4km²)") + 
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Histograma para SGVI
+p3 <- ggplot(data_4km, aes(x = SGVI, fill = scale)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+  labs(x = "Sparing green", y = "Frequency") +
+  ggtitle("Sparing green (4km²)") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Histograma para SUVI
+p4 <- ggplot(data_4km, aes(x = SUVI, fill = scale)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+  labs(x = "Sparing urban", y = "Frequency") +
+  ggtitle("Sparing urban (4km²)") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Usar patchwork para combinar os gráficos
+(p1 | p2) / (p3 | p4)
+```
+
+## 4 km²
+```{r, echo=FALSE}
+# Histograma para SVI
+p1 <- ggplot(data_4km, aes(x = SVI, fill = scale)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+  labs(x = "Sharing", y = "Frequency") +
+  ggtitle("Sharing (4km²)") +
+  scale_fill_manual(values = "#60a576") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Histograma para SEVIo
+p2 <- ggplot(data_4km, aes(x = SEVIo, fill = scale)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+  labs(x = "Sparing uneveness", y = "Frequency") +
+  ggtitle("Sparing uneveness (4km²)") +
+  scale_fill_manual(values = "#60a576") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Histograma para SGVI
+p3 <- ggplot(data_4km, aes(x = SGVI, fill = scale)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+  labs(x = "Sparing green", y = "Frequency") +
+  ggtitle("Sparing green (4km²)") +
+  scale_fill_manual(values = "#60a576") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Histograma para SUVI
+p4 <- ggplot(data_4km, aes(x = SUVI, fill = scale)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+  labs(x = "Sparing urban", y = "Frequency") +
+  ggtitle("Sparing urban (4km²)") +
+  scale_fill_manual(values = "#60a576") +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Usar patchwork para combinar os gráficos
+(p1 | p2) / (p3 | p4)
+```
+
+## 9 km²
+```{r, echo=FALSE}
+# Histograma para SVI
+p1 <- ggplot(data_9km, aes(x = SVI, fill = scale)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+  labs(x = "Sharing", y = "Frequency") +
+  ggtitle("Sharing (9km²)") +
+  scale_fill_manual(values = "#5575c5") + 
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Histograma para SEVIo
+p2 <- ggplot(data_9km, aes(x = SEVIo, fill = scale)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+  labs(x = "Sparing uneveness", y = "Frequency") +
+  ggtitle("Sparing uneveness (9km²)") +
+  scale_fill_manual(values = "#5575c5") +
+  theme_classic() +
+  theme(
+    legend.position = "none",  # Remove a legenda
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Histograma para SGVI
+p3 <- ggplot(data_9km, aes(x = SGVI, fill = scale)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+  labs(x = "Sparing green", y = "Frequency") +
+  ggtitle("Sparing green (9km²)") +
+  scale_fill_manual(values = "#5575c5") + 
+  theme_classic() +
+  theme(
+    legend.position = "none",  # Remove a legenda
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Histograma para SUVI
+p4 <- ggplot(data_9km, aes(x = SUVI, fill = scale)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+  labs(x = "Sparing urban", y = "Frequency") +
+  ggtitle("Sparing urban (9km²)") +
+  scale_fill_manual(values = "#5575c5") +
+  theme_classic() +
+  theme(
+    legend.position = "none",  # Remove a legenda
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# Usar patchwork para combinar os gráficos
+(p1 | p2) / (p3 | p4)
 ```

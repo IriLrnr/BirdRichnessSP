@@ -1,0 +1,895 @@
+---
+title: "Assessing the Impact of Urban Infrastructure on Bird Biodiversity"
+author: "Bianca Neves, Irina Lerner, Douglas Cirino"
+date: "2024-09-25"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    theme: paper
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(ggplot2)       # For data visualization
+library(dplyr)         # For data manipulation
+library(PerformanceAnalytics) # For correlation matrix
+library(tidyr)         # For data tidying
+library(sf)            # For handling spatial data
+library(sp)            # For handling spatial data
+library(spdep)         # For spatial dependence analysis
+library(ggeffects)    # For extracting and plotting model effects
+library(mgcv)          # For fitting GAMs
+library(viridis)       # For color scales
+library(patchwork)    # combine plots
+library(car)
+library(lme4)
+library(MASS)
+
+custom_theme <- theme_minimal() +
+  theme(text = element_text(size = 12),
+        plot.title = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+```
+
+# Data 9km²
+This is a $9km^2$ grid over the urban area of the city of São Paulo
+```{r data, include=FALSE, warning=FALSE}
+shp <- st_read("Z:/Bianca/eBird/Data/3km_urb_f5km/richness_effort_v20_total_3km_urb_f5km_30min_10spp_sem_exot_equiv_groups.shp")
+#shp <- st_read("C:/Users/Bianca/Documents/USP/Projeto/eBird/Data/1km/richness_effort_v16_total_1km_urb_f1km_30min_10spp.shp")
+cdata <- shp
+
+
+## 2. Rename columns
+cdata <- cdata %>% 
+  rename(
+    richness = richness_s,
+    effort = effort_s,
+    Bheight_m = Bhght_m,
+    Bheight_s = Bhght_s,
+    Vheight_m = Vhght_m,
+    Vheight_s = Vhght_s,
+    Wdistance = Wdistnc,
+    contig_f = contg_f,
+    contig_h = contg_h,
+    pland_f = plant_f,
+    pland_h = pland_h,
+    area_mn_f = ar_mn_f,
+    area_mn_h = ar_mn_h,
+    prop_veg = prop_vg,
+    prop_for = prp_frs,
+    prop_wet = prp__wt,
+    prop_grc = prp_grc,
+    prop_hrb = prp_hrb,
+    landscape_ = lndscp_,
+    contig_m_tot = cntg_m_,
+    pland_tot = plnd_tt,
+    nlsi_tot = nlsi_tt,
+    area_m_tot = ar_mn_t,
+    Gdistance = Gdistnc,
+    geometry = geometry
+  )
+
+cdata <- cdata %>%
+  mutate(across(everything(), ~ replace_na(., 0))) %>% 
+  arrange(id)
+
+cdata$centx <- st_coordinates(st_centroid(cdata))[, 1]
+cdata$centy <- st_coordinates(st_centroid(cdata))[, 2]
+
+```
+
+### Correlation between variables
+```{r cor, echo=FALSE, warning=FALSE}
+## 1. Predictors
+predictors <- c("effort", "SVI", "SEVIo", "SUVI", "SGVI", "prop_arb")
+
+## 2. Correlation of variables
+cor_mat_structure <- as.data.frame(cdata)[, c("richness", predictors)]
+suppressWarnings(chart.Correlation(cor_mat_structure, histogram = TRUE, pch = 16, method = "pearson"))
+```
+
+### Association between richness and variables
+```{r rich, echo=FALSE, warning=FALSE}
+## 3. Association between richness and variables
+# Reshape the data to long format with only 'value' and 'variable'
+cdata_long <- cdata[, c("richness", "effort", "SVI", "SEVIo", "SUVI", "SGVI", "prop_arb")]
+cdata_long <- cdata_long %>% 
+  pivot_longer(
+    cols = c("effort", "SVI", "SEVIo", "SUVI", "SGVI", "prop_arb"),
+    names_to = "variable",
+    values_to = "value"
+  )
+
+# Create a faceted plot for the specified predictors
+(plot_structure <- ggplot(cdata_long, aes(x = value, y = richness)) + 
+    geom_point(alpha = 0.7, color = "black") + 
+    geom_smooth(method = "loess", color = "blue", fill = "blue", alpha = 0.1) +
+    facet_wrap(~ variable, scales = "free_x", ncol = 2, nrow = 3) +  # Adjusting to 3 rows and 2 columns
+    labs(x = "Value", y = "Richness") +
+    theme_classic() + 
+    theme(
+      axis.title = element_text(size = 14),  
+      axis.text = element_text(size = 14),
+      strip.text = element_text(size = 12, face = "bold"),
+      plot.title = element_text(size = 16, face = "bold")
+    ) +
+    ggtitle("Richness  vs. Predictors"))
+
+```
+
+# Spatial correlation
+```{r spatial, echo=FALSE, warning=FALSE}
+# 1. Testing for spatial correlation
+coords <- st_centroid(cdata)
+nb <- poly2nb(cdata)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+moran.mc(cdata$richness, lw, nsim = 999)
+# We see that there is a small spatial correlation
+
+# 2. Check the spatial distribuition of richness
+(ggplot(data = cdata) +
+  geom_sf(aes(fill = richness), color = NA) +
+  scale_fill_viridis_c(direction = -1) +
+  custom_theme)
+```
+
+
+# Generalized linear models
+## Null model
+### GLM 0: Null model
+```{r, echo=FALSE, warning=FALSE}
+# Fit the mixed model with effort as a random intercept
+glm_null <- glmer.nb(richness ~ 1 + (1 | effort), 
+                     data = cdata)
+
+summary(glm_null)
+
+summary_glm_null <- summary(glm_null)
+estimate_glm_null <- summary_glm_null$coefficients[, "Estimate"]
+se_glm_null <- summary_glm_null$coefficients[, "Std. Error"]
+pval_glm_null <- summary_glm_null$coefficients[, "Pr(>|z|)"]
+df_glm_null <- summary_glm_null$df.residual
+
+aic_glm_null <- AIC(glm_null)
+print(aic_glm_null)
+```
+
+## GLM with one predictor
+### GLM: rich ~ SVI
+```{r, echo=FALSE, warning=FALSE}
+# Fit the GLM with SVI as a fixed effect and effort as a random effect
+glm_SVI <- glmer.nb(richness ~ SVI + (1 | effort), data = cdata)
+
+summary(glm_SVI)
+
+summary_glm_SVI <- summary(glm_SVI)
+estimate_glm_SVI <- summary_glm_SVI$coefficients[, "Estimate"]
+se_glm_SVI <- summary_glm_SVI$coefficients[, "Std. Error"]
+pval_glm_SVI <- summary_glm_SVI$coefficients[, "Pr(>|z|)"]
+df_glm_SVI <- summary_glm_SVI$df.residual
+
+aic_glm_SVI <- AIC(glm_SVI)
+print(aic_glm_SVI)
+```
+
+### GAM 5: rich ~ prop_arb
+```{r, echo=FALSE, warning=FALSE}
+# Fit the GLM with prop_arb as a fixed effect and effort as a random effect
+glm_prop_arb <- glmer.nb(richness ~ prop_arb + (1 | effort), data = cdata)
+
+summary(glm_prop_arb)
+
+summary_glm_prop_arb <- summary(glm_prop_arb)
+estimate_glm_prop_arb <- summary_glm_prop_arb$coefficients[, "Estimate"]
+se_glm_prop_arb <- summary_glm_prop_arb$coefficients[, "Std. Error"]
+pval_glm_prop_arb <- summary_glm_prop_arb$coefficients[, "Pr(>|z|)"]
+df_glm_prop_arb <- summary_glm_prop_arb$df.residual
+
+aic_glm_prop_arb <- AIC(glm_prop_arb)
+print(aic_glm_prop_arb)
+```
+
+## GAM with additive effects
+### GLM: rich ~ SVI + prop_arb
+```{r, echo=FALSE, warning=FALSE}
+# Fit the GLM with SVI and prop_arb as fixed effects and effort as a random effect
+glm_svi_prop_arb <- glmer.nb(richness ~ SVI + prop_arb + (1 | effort), data = cdata)
+
+summary(glm_svi_prop_arb)
+
+summary_glm_svi_prop_arb <- summary(glm_svi_prop_arb)
+estimate_glm_svi_prop_arb <- summary_glm_svi_prop_arb$coefficients[, "Estimate"]
+se_glm_svi_prop_arb <- summary_glm_svi_prop_arb$coefficients[, "Std. Error"]
+pval_glm_svi_prop_arb <- summary_glm_svi_prop_arb$coefficients[, "Pr(>|z|)"]
+df_glm_svi_prop_arb <- summary_glm_svi_prop_arb$df.residual
+
+aic_glm_svi_prop_arb <- AIC(glm_svi_prop_arb)
+print(aic_glm_svi_prop_arb)
+```
+
+### GLM: rich ~ SEVIo + SGVI 
+```{r, echo=FALSE, warning=FALSE}
+# Fit the GLM with SEVIo and SGVI as fixed effects and effort as a random effect
+glm_sevio_sgvi <- glmer.nb(richness ~ SEVIo + SGVI + (1 | effort), data = cdata)
+
+summary(glm_sevio_sgvi)
+
+summary_glm_sevio_sgvi <- summary(glm_sevio_sgvi)
+estimate_glm_sevio_sgvi <- summary_glm_sevio_sgvi$coefficients[, "Estimate"]
+se_glm_sevio_sgvi <- summary_glm_sevio_sgvi$coefficients[, "Std. Error"]
+pval_glm_sevio_sgvi <- summary_glm_sevio_sgvi$coefficients[, "Pr(>|z|)"]
+df_glm_sevio_sgvi <- summary_glm_sevio_sgvi$df.residual
+
+aic_glm_sevio_sgvi <- AIC(glm_sevio_sgvi)
+print(aic_glm_sevio_sgvi)
+```
+
+
+
+
+
+### GAM 3: rich ~ SEVIo + SUVI
+```{r, echo=FALSE, warning=FALSE}
+# Fit the GLM with SEVIo and SUVI as fixed effects and effort as a random effect
+glm_sevio_suvi <- glmer.nb(richness ~ SEVIo + SUVI + (1 | effort), data = cdata)
+
+summary(glm_sevio_suvi)
+
+summary_glm_sevio_suvi <- summary(glm_sevio_suvi)
+estimate_glm_sevio_suvi <- summary_glm_sevio_suvi$coefficients[, "Estimate"]
+se_glm_sevio_suvi <- summary_glm_sevio_suvi$coefficients[, "Std. Error"]
+pval_glm_sevio_suvi <- summary_glm_sevio_suvi$coefficients[, "Pr(>|z|)"]
+df_glm_sevio_suvi <- summary_glm_sevio_suvi$df.residual
+
+aic_glm_sevio_suvi <- AIC(glm_sevio_suvi)
+print(aic_glm_sevio_suvi)
+```
+
+
+
+
+## GLM with interaction effects
+### GLM: rich ~ SVI * prop_arb
+```{r, echo=FALSE, warning=FALSE}
+# Fit the GLM with interaction between SVI and prop_arb as fixed effects and effort as a random effect
+glm_svi_prop_arb_int <- glmer.nb(richness ~ SVI * prop_arb + (1 | effort), data = cdata)
+
+summary(glm_svi_prop_arb_int)
+
+summary_glm_svi_prop_arb_int <- summary(glm_svi_prop_arb_int)
+estimate_glm_svi_prop_arb_int <- summary_glm_svi_prop_arb_int$coefficients[, "Estimate"]
+se_glm_svi_prop_arb_int <- summary_glm_svi_prop_arb_int$coefficients[, "Std. Error"]
+pval_glm_svi_prop_arb_int <- summary_glm_svi_prop_arb_int$coefficients[, "Pr(>|z|)"]
+df_glm_svi_prop_arb_int <- summary_glm_svi_prop_arb_int$df.residual
+
+aic_glm_svi_prop_arb_int <- AIC(glm_svi_prop_arb_int)
+print(aic_glm_svi_prop_arb_int)
+```
+
+
+### GLM: rich ~ SEVIo * SGVI 
+```{r, echo=FALSE, warning=FALSE}
+# Fit the GLM with interaction between SEVIo and SGVI as fixed effects and effort as a random effect
+glm_sevio_sgvi_int <- glmer.nb(richness ~ SEVIo * SGVI + (1 | effort), data = cdata)
+
+summary(glm_sevio_sgvi_int)
+
+summary_glm_sevio_sgvi_int <- summary(glm_sevio_sgvi_int)
+estimate_glm_sevio_sgvi_int <- summary_glm_sevio_sgvi_int$coefficients[, "Estimate"]
+se_glm_sevio_sgvi_int <- summary_glm_sevio_sgvi_int$coefficients[, "Std. Error"]
+pval_glm_sevio_sgvi_int <- summary_glm_sevio_sgvi_int$coefficients[, "Pr(>|z|)"]
+df_glm_sevio_sgvi_int <- summary_glm_sevio_sgvi_int$df.residual
+
+aic_glm_sevio_sgvi_int <- AIC(glm_sevio_sgvi_int)
+print(aic_glm_sevio_sgvi_int)
+```
+
+### GLM: rich ~ SEVIo * SUVI
+```{r, echo=FALSE, warning=FALSE}
+# Fit the GLM with interaction between SEVIo and SUVI as fixed effects and effort as a random effect
+glm_sevio_suvi_int <- glmer.nb(richness ~ SEVIo * SUVI + (1 | effort), data = cdata)
+
+summary(glm_sevio_suvi_int)
+
+summary_glm_sevio_suvi_int <- summary(glm_sevio_suvi_int)
+estimate_glm_sevio_suvi_int <- summary_glm_sevio_suvi_int$coefficients[, "Estimate"]
+se_glm_sevio_suvi_int <- summary_glm_sevio_suvi_int$coefficients[, "Std. Error"]
+pval_glm_sevio_suvi_int <- summary_glm_sevio_suvi_int$coefficients[, "Pr(>|z|)"]
+df_glm_sevio_suvi_int <- summary_glm_sevio_suvi_int$df.residual
+
+aic_glm_sevio_suvi_int <- AIC(glm_sevio_suvi_int)
+print(aic_glm_sevio_suvi_int)
+```
+
+## Comparing GLM models
+```{r, echo=FALSE, warning=FALSE}
+# Store model names and AIC values in a data frame
+aic_values_glm <- data.frame(
+  Model = c("Model 1 (SEVIo + SUVI)", 
+            "Model 2 (SEVIo * SUVI)", 
+            "Model 3 (SEVIo + SGVI)",  
+            "Model 4 (SEVIo * SGVI)",  
+            "Model 5 (SVI + prop_arb)", 
+            "Model 6 (SVI * prop_arb)", 
+            "Model 7 (prop_arb)",
+            "Null Model"),
+  AIC = c(aic_glm_sevio_suvi, 
+          aic_glm_sevio_suvi_int, 
+          aic_glm_sevio_sgvi,     
+          aic_glm_sevio_sgvi_int,  
+          aic_glm_svi_prop_arb, 
+          aic_glm_svi_prop_arb_int, 
+          aic_glm_prop_arb,
+          aic_glm_null)
+)
+
+# Calculate delta AIC
+aic_min_glm <- min(aic_values_glm$AIC)
+aic_values_glm$Delta_AIC_glm <- aic_values_glm$AIC - aic_min_glm  # Use aic_min_glm here
+
+# Sort by AIC
+aic_values_glm_sorted <- aic_values_glm[order(aic_values_glm$AIC), ]
+
+# Print the sorted AIC values along with Delta AIC
+print(aic_values_glm_sorted)
+
+```
+
+
+
+# Generalized additive models
+## Null model
+### GAM 0: Null model
+```{r, echo=FALSE, warning=FALSE}
+#### 0. GAM: Null model ####
+gam_null <- gam(richness ~ 1 + s(effort, bs = "re"), 
+                data = cdata, 
+                family = nb(link = "log"))
+
+summary(gam_null)
+
+summary_gam_null <- summary(gam_null)
+estimate_gam_null <- summary_gam_null$p.table[, "Estimate"]
+se_gam_null <- summary_gam_null$p.table[, "Std. Error"]
+pval_gam_null <- summary_gam_null$p.table[, "Pr(>|z|)"]
+df_gam_null <- summary_gam_null$df.residual
+
+## 2. AIC
+aic_gam_null <- AIC(gam_null)
+AIC(gam_null)
+```
+
+## GAM with one predictor
+### GAM 4: rich ~ SVI 
+```{r, echo=FALSE, warning=FALSE}
+## 1. Model
+gam_SVI <- gam(richness ~ s(SVI) + s(effort, bs = "re"), 
+               data = cdata, 
+               family = nb(link = "log"))
+
+summary(gam_SVI)
+
+summary_SVI <- summary(gam_SVI)
+estimate_SVI <- summary_SVI$p.table[, "Estimate"]
+se_SVI <- summary_SVI$p.table[, "Std. Error"]
+pval_SVI <- summary_SVI$p.table[, "Pr(>|z|)"]
+df_SVI <- summary(gam_SVI)$df.residual
+
+## 2. AIC
+aic_SVI <- AIC(gam_SVI)
+AIC(gam_SVI)
+
+## 3. Plot
+plot(gam_SVI, pages = 1, residuals = TRUE, rug = TRUE)
+plot_vis_gam_4 <- vis.gam(gam_SVI, theta = 150, n.grid = 50, lwd = 0.4)
+```
+
+```{r, include=FALSE, warning=FALSE}
+## 4. Heatmap
+# 4.1 Create a grid of values for SVI
+sim_data4 <- expand.grid(SVI = seq(0, 1, length.out = 200))
+
+# Add a fixed value for `effort` to the grid
+fixed_effort <- median(cdata$effort)
+
+# 4.2: Use predict() to generate predictions from the model gam_SVI
+sim_data4 <- sim_data4 %>% 
+  mutate(predicted_richness = predict(gam_SVI, newdata = transform(sim_data4, effort = fixed_effort), type = "response"))
+
+# 4.3: Plot the results using geom_tile() for a heatmap
+plot_heatmap_4 <- ggplot(data = sim_data4, aes(x = SVI, y = predicted_richness, fill = predicted_richness)) +
+  geom_tile() +
+  scale_fill_viridis_c(name = "Predicted richness") +
+  labs(x = "SVI", y = "Predicted richness") +
+  theme_classic() + 
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  ggtitle("Heatmap of model 4")
+```
+
+### GAM 5: rich ~ prop_arb
+```{r, echo=FALSE, warning=FALSE}
+## 1. Model
+gam_prop_arb <- gam(richness ~ s(prop_arb) + s(effort, bs = "re"), 
+                    data = cdata, 
+                    family = nb(link = "log"))
+
+summary_prop_arb <- summary(gam_prop_arb)
+estimate_prop_arb <- summary_prop_arb$p.table[, "Estimate"]
+se_prop_arb <- summary_prop_arb$p.table[, "Std. Error"]
+pval_prop_arb <- summary_prop_arb$p.table[, "Pr(>|z|)"]
+df_prop_arb <- summary(gam_prop_arb)$df.residual
+
+## 2. AIC
+aic_prop_arb <- AIC(gam_prop_arb)
+
+## 3. Plot
+plot(gam_prop_arb, pages = 1, residuals = TRUE, rug = TRUE)
+plot_vis_gam_5 <- vis.gam(gam_prop_arb, theta = 150, n.grid = 50, lwd = 0.4)
+```
+
+```{r gam5p, include=FALSE, warning=FALSE}
+## 4. Heatmap
+# 4.1 Create a grid of values for prop_arb
+sim_data5 <- expand.grid(prop_arb = seq(0, 1, length.out = 200))
+
+# Add a fixed value for `effort` to the grid
+fixed_effort <- median(cdata$effort)
+
+# 4.2: Use predict() to generate predictions from the model gam_prop_arb
+sim_data5 <- sim_data5 %>% 
+  mutate(predicted_richness = predict(gam_prop_arb, newdata = transform(sim_data5, effort = fixed_effort), type = "response"))
+
+# 4.3: Plot the results using geom_tile() for a heatmap
+plot_heatmap_5 <- ggplot(data = sim_data5, aes(x = prop_arb, y = predicted_richness, fill = predicted_richness)) +
+  geom_tile() +
+  scale_fill_viridis_c(name = "Predicted richness") +
+  labs(x = "Proportion of vegetation", y = "Predicted richness") +
+  theme_classic() + 
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  ggtitle("Heatmap of model 5")
+```
+
+## GAM with additive effects
+### GAM 1: rich ~ SVI + prop_arb
+```{r gam1, echo=FALSE, warning=FALSE}
+#### 1. GAM: rich ~ SVI + prop_arb ####
+## 1. Model
+gam_SVI_prop_arb <- gam(richness ~ s(SVI) + s(prop_arb) + s(effort, bs = "re"), 
+                    data = cdata, 
+                    family = nb(link = "log"))
+
+summary_SVI_prop_arb <- summary(gam_SVI_prop_arb)
+estimate_SVI_prop_arb <- summary_SVI_prop_arb$p.table[, "Estimate"]
+se_SVI_prop_arb <- summary_SVI_prop_arb$p.table[, "Std. Error"]
+pval_SVI_prop_arb <- summary_SVI_prop_arb$p.table[, "Pr(>|z|)"]
+df_SVI_prop_arb <- summary(gam_SVI_prop_arb)$df.residual
+
+## 2. AIC
+aic_SVI_prop_arb <- AIC(gam_SVI_prop_arb)
+
+## 3. Plot
+plot(gam_SVI_prop_arb, pages = 1, residuals = TRUE, rug = TRUE)
+plot_vis_gam_1 <- vis.gam(gam_SVI_prop_arb, theta = 150, n.grid = 50, lwd = 0.4)
+```
+
+```{r gam1p, include=FALSE, warning=FALSE}
+## 4. Heatmap
+# 4.1 Create a grid of values for SEVIn and SVI
+sim_data1 <- expand.grid(prop_arb = seq(0, 1, length.out = 200),
+                        SVI = seq(0, 1, length.out = 200))
+
+# Add a fixed value for `effort` to the grid
+fixed_effort <- median(cdata$effort)  # Example: using the median of `effort`
+
+# 4.2: Use predict() to generate predictions from the model gam_SVI_prop_arb
+sim_data1 <- sim_data1 %>% 
+  mutate(predicted_richness = predict(gam_SVI_prop_arb, newdata = transform(sim_data1, effort = fixed_effort), type = "response"))
+
+# 4.3: Plot the results using geom_tile() for a heatmap
+plot_heatmap_1 <- ggplot(data = sim_data1, aes(x = SVI, y = prop_arb, fill = predicted_richness)) +
+  geom_tile() +
+  scale_fill_viridis_c(name = "Predicted richness") +
+  labs(x = "SVI", y = "Proportion of vegetation") +
+  theme_classic() + 
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  ggtitle("Heatmap of model 1")
+
+print(plot_heatmap_1)
+```
+
+### GAM 2: rich ~ SEVIo + SGVI 
+```{r gam2, echo=FALSE, warning=FALSE}
+#### 2. GAM: rich ~ SEVIo + SGVI ####
+## 1. Model
+gam_SEVIo_SGVI <- gam(richness ~ s(SEVIo) + s(SGVI) + s(effort, bs = "re"), 
+                      data = cdata, 
+                      family = nb(link = "log"))
+
+summary_SEVIo_SGVI <- summary(gam_SEVIo_SGVI)
+estimate_SEVIo_SGVI <- summary_SEVIo_SGVI$p.table[, "Estimate"]
+se_SEVIo_SGVI <- summary_SEVIo_SGVI$p.table[, "Std. Error"]
+pval_SEVIo_SGVI <- summary_SEVIo_SGVI$p.table[, "Pr(>|z|)"]
+df_SEVIo_SGVI <- summary(gam_SEVIo_SGVI)$df.residual
+
+## 2. AIC
+aic_SEVIo_SGVI <- AIC(gam_SEVIo_SGVI)
+
+## 3. Plot
+plot(gam_SEVIo_SGVI, pages = 1, residuals = TRUE, rug = TRUE)
+plot_vis_gam_2 <- vis.gam(gam_SEVIo_SGVI, theta = 150, n.grid = 50, lwd = 0.4)
+```
+
+```{r gam2p, include=FALSE, warning=FALSE}
+## 4. Heatmap
+# 4.1 Create a grid of values for SEVIo and SGVI
+sim_data2 <- expand.grid(SEVIo = seq(0, 1, length.out = 200),
+                         SGVI = seq(0, 1, length.out = 200))
+
+# Add a fixed value for `effort` to the grid
+fixed_effort <- median(cdata$effort)  # Example: using the median of `effort`
+
+# 4.2: Use predict() to generate predictions from the model gam_SEVIo_SGVI
+sim_data2 <- sim_data2 %>% 
+  mutate(predicted_richness = predict(gam_SEVIo_SGVI, newdata = transform(sim_data2, effort = fixed_effort), type = "response"))
+
+# 4.3: Plot the results using geom_tile() for a heatmap
+plot_heatmap_2 <- ggplot(data = sim_data2, aes(x = SEVIo, y = SGVI, fill = predicted_richness)) +
+  geom_tile() +
+  scale_fill_viridis_c(name = "Predicted richness") +
+  labs(x = "SEVIo", y = "SGVI") +
+  theme_classic() + 
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  ggtitle("Heatmap of model 2")
+```
+
+### GAM 3: rich ~ SEVIo + SUVI
+```{r gam3, echo=FALSE, warning=FALSE}
+#### 3. GAM: rich ~ SEVIo + SUVI ####
+## 1. Model
+gam_SEVIo_SUVI <- gam(richness ~ s(SEVIo) + s(SUVI) + s(effort, bs = "re"), 
+                      data = cdata, 
+                      family = nb(link = "log"))
+
+summary_SEVIo_SUVI <- summary(gam_SEVIo_SUVI)
+estimate_SEVIo_SUVI <- summary_SEVIo_SUVI$p.table[, "Estimate"]
+se_SEVIo_SUVI <- summary_SEVIo_SUVI$p.table[, "Std. Error"]
+pval_SEVIo_SUVI <- summary_SEVIo_SUVI$p.table[, "Pr(>|z|)"]
+df_SEVIo_SUVI <- summary(gam_SEVIo_SUVI)$df.residual
+
+## 2. AIC
+aic_SEVIo_SUVI <- AIC(gam_SEVIo_SUVI)
+
+## 3. Plot
+plot(gam_SEVIo_SUVI, pages = 1, residuals = TRUE, rug = TRUE)
+plot_vis_gam_3 <- vis.gam(gam_SEVIo_SUVI, theta = 150, n.grid = 50, lwd = 0.4)
+```
+
+```{r gam3p, include=FALSE, warning=FALSE}
+## 4. Heatmap
+# 4.1 Create a grid of values for SEVIo and SUVI
+sim_data3 <- expand.grid(SEVIo = seq(0, 1, length.out = 200),
+                         SUVI = seq(0, 1, length.out = 200))
+
+# Add a fixed value for `effort` to the grid
+fixed_effort <- median(cdata$effort)
+
+# 4.2: Use predict() to generate predictions from the model gam_SEVIo_SUVI
+sim_data3 <- sim_data3 %>% 
+  mutate(predicted_richness = predict(gam_SEVIo_SUVI, newdata = transform(sim_data3, effort = fixed_effort), type = "response"))
+
+# 4.3: Plot the results using geom_tile() for a heatmap
+plot_heatmap_3 <- ggplot(data = sim_data3, aes(x = SEVIo, y = SUVI, fill = predicted_richness)) +
+  geom_tile() +
+  scale_fill_viridis_c(name = "Predicted richness") +
+  labs(x = "SEVIo", y = "SUVI") +
+  theme_classic() + 
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  ggtitle("Heatmap of model 3")
+```
+
+## GAM with interaction effects
+### GAM 6: rich ~ SVI * prop_arb
+```{r gam6, echo=FALSE, warning=FALSE}
+#### 1. GAM: rich ~ SVI * prop_arb ####
+## 1. Model
+gam_SVI_prop_arb_int <- gam(richness ~ s(SVI,prop_arb) + s(effort, bs = "re"), 
+                    data = cdata, 
+                    family = nb(link = "log"))
+
+summary_SVI_prop_arb_int <- summary(gam_SVI_prop_arb_int)
+estimate_SVI_prop_arb_int <- summary_SVI_prop_arb_int$p.table[, "Estimate"]
+se_SVI_prop_arb_int <- summary_SVI_prop_arb_int$p.table[, "Std. Error"]
+pval_SVI_prop_arb_int <- summary_SVI_prop_arb_int$p.table[, "Pr(>|z|)"]
+df_SVI_prop_arb_int <- summary(gam_SVI_prop_arb_int)$df.residual
+
+## 2. AIC
+aic_SVI_prop_arb_int <- AIC(gam_SVI_prop_arb_int)
+
+## 3. Plot
+plot(gam_SVI_prop_arb_int, pages = 1, residuals = TRUE, rug = TRUE)
+plot_vis_gam_6 <- vis.gam(gam_SVI_prop_arb_int, theta = 150, n.grid = 50, lwd = 0.4)
+```
+
+```{r gam6p, include=FALSE, warning=FALSE}
+## 4. Heatmap
+# 4.1 Create a grid of values for prop_arb and SVI
+sim_data6 <- expand.grid(prop_arb = seq(0, 1, length.out = 200),
+                        SVI = seq(0, 1, length.out = 200))
+
+# Add a fixed value for `effort` to the grid
+fixed_effort <- median(cdata$effort)  # Example: using the median of `effort`
+
+# 4.2: Use predict() to generate predictions from the model gam_SVI_prop_arb
+sim_data6 <- sim_data6 %>% 
+  mutate(predicted_richness = predict(gam_SVI_prop_arb_int, newdata = transform(sim_data6, effort = fixed_effort), type = "response"))
+
+# 4.3: Plot the results using geom_tile() for a heatmap
+plot_heatmap_6 <- ggplot(data = sim_data6, aes(x = SVI, y = prop_arb, fill = predicted_richness)) +
+  geom_tile() +
+  scale_fill_viridis_c(name = "Predicted richness") +
+  labs(x = "SVI", y = "Proportion of vegetation") +
+  theme_classic() + 
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  ggtitle("Heatmap of model 6")
+
+print(plot_heatmap_6)
+```
+
+### GAM 7: rich ~ SEVIo * SGVI 
+```{r gam7, echo=FALSE, warning=FALSE}
+#### 7. GAM: rich ~ SEVIo * SGVI ####
+## 1. Model
+gam_SEVIo_SGVI_int <- gam(richness ~ s(SEVIo,SGVI) + s(effort, bs = "re"), 
+                      data = cdata, 
+                      family = nb(link = "log"))
+
+summary_SEVIo_SGVI_int <- summary(gam_SEVIo_SGVI_int)
+estimate_SEVIo_SGVI_int <- summary_SEVIo_SGVI_int$p.table[, "Estimate"]
+se_SEVIo_SGVI_int <- summary_SEVIo_SGVI_int$p.table[, "Std. Error"]
+pval_SEVIo_SGVI_int <- summary_SEVIo_SGVI_int$p.table[, "Pr(>|z|)"]
+df_SEVIo_SGVI_int <- summary(gam_SEVIo_SGVI_int)$df.residual
+
+## 2. AIC
+aic_SEVIo_SGVI_int <- AIC(gam_SEVIo_SGVI_int)
+
+## 3. Plot
+plot(gam_SEVIo_SGVI_int, pages = 1, residuals = TRUE, rug = TRUE)
+plot_vis_gam_7 <- vis.gam(gam_SEVIo_SGVI_int, theta = 150, n.grid = 50, lwd = 0.4)
+```
+
+```{r gam7p, include=FALSE, warning=FALSE}
+## 4. Heatmap
+# 4.1 Create a grid of values for SEVIo and SGVI
+sim_data7 <- expand.grid(SEVIo = seq(0, 1, length.out = 200),
+                         SGVI = seq(0, 1, length.out = 200))
+
+# Add a fixed value for `effort` to the grid
+fixed_effort <- median(cdata$effort)  # Example: using the median of `effort`
+
+# 4.2: Use predict() to generate predictions from the model gam_SEVIo_SGVI
+sim_data7 <- sim_data7 %>% 
+  mutate(predicted_richness = predict(gam_SEVIo_SGVI_int, newdata = transform(sim_data7, effort = fixed_effort), type = "response"))
+
+# 4.3: Plot the results using geom_tile() for a heatmap
+plot_heatmap_7 <- ggplot(data = sim_data7, aes(x = SEVIo, y = SGVI, fill = predicted_richness)) +
+  geom_tile() +
+  scale_fill_viridis_c(name = "Predicted richness") +
+  labs(x = "SEVIo", y = "SGVI") +
+  theme_classic() + 
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  ggtitle("Heatmap of model 7")
+```
+
+### GAM 8: rich ~ SEVIo * SUVI
+```{r gam8, echo=FALSE, warning=FALSE}
+#### 3. GAM: rich ~ SEVIo * SUVI ####
+## 1. Model
+gam_SEVIo_SUVI_int <- gam(richness ~ s(SEVIo,SUVI) + s(effort, bs = "re"), 
+                      data = cdata, 
+                      family = nb(link = "log"))
+
+summary_SEVIo_SUVI_int <- summary(gam_SEVIo_SUVI_int)
+estimate_SEVIo_SUVI_int <- summary_SEVIo_SUVI_int$p.table[, "Estimate"]
+se_SEVIo_SUVI_int <- summary_SEVIo_SUVI_int$p.table[, "Std. Error"]
+pval_SEVIo_SUVI_int <- summary_SEVIo_SUVI_int$p.table[, "Pr(>|z|)"]
+df_SEVIo_SUVI_int <- summary(gam_SEVIo_SUVI_int)$df.residual
+
+## 2. AIC
+aic_SEVIo_SUVI_int <- AIC(gam_SEVIo_SUVI_int)
+
+## 3. Plot
+plot(gam_SEVIo_SUVI_int, pages = 1, residuals = TRUE, rug = TRUE)
+plot_vis_gam_8 <- vis.gam(gam_SEVIo_SUVI_int, theta = 150, n.grid = 50, lwd = 0.4)
+```
+
+```{r gam8p, include=FALSE, warning=FALSE}
+## 4. Heatmap
+# 4.1 Create a grid of values for SEVIo and SUVI
+sim_data8 <- expand.grid(SEVIo = seq(0, 1, length.out = 200),
+                         SUVI = seq(0, 1, length.out = 200))
+
+# Add a fixed value for `effort` to the grid
+fixed_effort <- median(cdata$effort)
+
+# 4.2: Use predict() to generate predictions from the model gam_SEVIo_SUVI
+sim_data8 <- sim_data8 %>% 
+  mutate(predicted_richness = predict(gam_SEVIo_SUVI_int, newdata = transform(sim_data8, effort = fixed_effort), type = "response"))
+
+# 4.3: Plot the results using geom_tile() for a heatmap
+plot_heatmap_8 <- ggplot(data = sim_data8, aes(x = SEVIo, y = SUVI, fill = predicted_richness)) +
+  geom_tile() +
+  scale_fill_viridis_c(name = "Predicted richness") +
+  labs(x = "SEVIo", y = "SUVI") +
+  theme_classic() + 
+  theme(
+    axis.title = element_text(size = 14),  
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    plot.title = element_text(size = 16, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  ggtitle("Heatmap of model 8")
+```
+
+
+## Comparing GAM models
+
+```{r compar, echo=FALSE, warning=FALSE}
+# Store model names and AIC values in a data frame
+aic_values <- data.frame(
+  Model = c("Model 1 (SVI + prop_arb)", 
+            "Model 2 (SEVIo + SGVI)", 
+            "Model 3 (SEVIo + SUVI)", 
+            "Model 4 (SVI)", 
+            "Model 5 (prop_arb)",
+            "Model 6 (SVI * prop_arb)", 
+            "Model 7 (SEVIo * SGVI)", 
+            "Model 8 (SEVIo * SUVI)",
+            "Null Model"),
+  AIC = c(aic_SVI_prop_arb, 
+          aic_SEVIo_SGVI, 
+          aic_SEVIo_SUVI, 
+          aic_SVI, 
+          aic_prop_arb,
+          aic_SVI_prop_arb_int, 
+          aic_SEVIo_SGVI_int, 
+          aic_SEVIo_SUVI_int,
+          aic_gam_null)
+)
+
+# Calculate delta AIC
+aic_min <- min(aic_values$AIC)
+aic_values$Delta_AIC <- aic_values$AIC - aic_min
+
+# Sort by AIC
+aic_values_sorted <- aic_values[order(aic_values$AIC), ]
+
+# Print the sorted AIC values along with Delta AIC
+print(aic_values_sorted)
+```
+
+```{r heatmap, echo=FALSE, warning=FALSE}
+plot_heatmap_2
+plot_heatmap_3
+plot_heatmap_7
+plot_heatmap_1
+plot_heatmap_5
+plot_heatmap_6
+plot_heatmap_8
+plot_heatmap_4
+```
+
+
+
+
+
+
+# Model selection
+```{r, echo=FALSE, warning=FALSE}
+aic_glm_gam <- data.frame(
+  Model = c("Model GLM (SEVIo + SUVI)", 
+            "Model GLM (SEVIo * SUVI)", 
+            "Model GLM (SEVIo + SGVI)",  
+            "Model GLM (SEVIo * SGVI)",  
+            "Model GLM (SVI + prop_arb)", 
+            "Model GLM (SVI * prop_arb)", 
+            "Model GLM (prop_arb)",
+            "Model GAM (SVI + prop_arb)", 
+            "Model GAM (SEVIo + SGVI)", 
+            "Model GAM (SEVIo + SUVI)", 
+            "Model GAM (SVI)", 
+            "Model GAM (prop_arb)",
+            "Model GAM (SVI * prop_arb)", 
+            "Model GAM (SEVIo * SGVI)", 
+            "Model GAM (SEVIo * SUVI)"),
+  AIC = c(aic_glm_sevio_suvi, 
+          aic_glm_sevio_suvi_int, 
+          aic_glm_sevio_sgvi,     
+          aic_glm_sevio_sgvi_int,  
+          aic_glm_svi_prop_arb, 
+          aic_glm_svi_prop_arb_int, 
+          aic_glm_prop_arb,
+          aic_SVI_prop_arb, 
+          aic_SEVIo_SGVI, 
+          aic_SEVIo_SUVI, 
+          aic_SVI, 
+          aic_prop_arb,
+          aic_SVI_prop_arb_int, 
+          aic_SEVIo_SGVI_int, 
+          aic_SEVIo_SUVI_int)
+)
+
+# Calculate delta AIC
+aic_min_glm_gam <- min(aic_glm_gam$AIC)
+aic_glm_gam$Delta_AIC_glm_gam <- aic_glm_gam$AIC - aic_min_glm_gam
+
+# Sort by AIC
+aic_glm_gam_sorted <- aic_glm_gam[order(aic_glm_gam$AIC), ]
+
+# Print the sorted AIC values along with Delta AIC
+print(aic_glm_gam_sorted)
+```
